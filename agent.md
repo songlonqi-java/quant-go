@@ -411,9 +411,13 @@ r.Register(&AlwaysBuy{})
 | `stock_basic` | 股票基础信息 | `list_status=L` |
 | `daily` | 日线 OHLCV | `ts_code`, `trade_date`, `start_date`, `end_date` |
 | `adj_factor` | 复权因子 | `ts_code`, `trade_date`, `start_date`, `end_date` |
-| `daily_basic` | 每日基本面指标 | `ts_code`, `trade_date`，返回 PE/PB/市值/换手率等 |
+| `daily_basic` | 每日基本面指标 | `ts_code`, `trade_date`，返回 PE/PB/市值/换手率/股息率等 |
+| `fina_indicator` | 财务指标 | `ts_code`, `start_date`, `end_date`，返回 ROE/ROA/利润率等 |
+| `income` | 利润表 | `ts_code`, `start_date`, `end_date`，返回营收/净利润 |
+| `trade_cal` | 交易日历 | `exchange`, `start_date`, `end_date` |
+| `hs_const` | 沪深300成分股 | `hs_type=SH\|SZ` |
 
----
+Tushare 接口源码: `~/github/tushare` — 遇到接口字段、限速规则、参数细节等问题时，优先从该源码项目中查找。
 
 ## 依赖清单
 
