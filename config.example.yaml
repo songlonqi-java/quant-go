@@ -1,0 +1,29 @@
+tushare:
+  token: "YOUR_TUSHARE_TOKEN_HERE"
+  base_url: "http://api.tushare.pro"
+  rate_limit_ms: 350
+  daily_call_limit: 5000
+
+data:
+  raw_dir: "./data/raw"
+  meta_dir: "./data/meta"
+  db_path: "./data/meta/quant.db"
+
+fetch:
+  start_year: 2021
+  end_year: 2026
+  stock_prefixes: ["60", "00", "001"]
+  min_market_cap: 100
+
+backtest:
+  initial_capital: 100000.0
+  commission: 0.0003
+  slippage: 0.0001
+  risk_free_rate: 0.03
+
+signal:
+  default_strategies:
+    - ma_crossover
+    - macd
+    - rsi
+  top_n: 20

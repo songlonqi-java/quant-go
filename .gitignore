@@ -4,7 +4,7 @@
 *.local
 
 # Generated market data and local databases
-data/
+/data/
 *.db
 *.sqlite
 *.sqlite3
@@ -16,6 +16,7 @@ tmp/
 temp/
 
 # Go build outputs
+/go-quant
 /quant
 *.test
 coverage.out
