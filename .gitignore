@@ -1,0 +1,26 @@
+# Local configuration and secrets
+.env
+.env.*
+*.local
+
+# Generated market data and local databases
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Go build outputs
+/quant
+*.test
+coverage.out
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
