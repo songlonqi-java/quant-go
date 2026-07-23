@@ -9,6 +9,11 @@ type DailyBar struct {
 	Close     float64 `parquet:"close"`
 	Vol       float64 `parquet:"vol"`
 	Amount    float64 `parquet:"amount"`
+	RawOpen   float64 `parquet:"raw_open"`
+	RawHigh   float64 `parquet:"raw_high"`
+	RawLow    float64 `parquet:"raw_low"`
+	RawClose  float64 `parquet:"raw_close"`
+	AdjFactor float64 `parquet:"adj_factor"`
 }
 
 type StockInfo struct {
@@ -61,17 +66,17 @@ type DailyBasic struct {
 }
 
 type FinaIndicator struct {
-	TsCode          string  `parquet:"ts_code"`
-	AnnDate         string  `parquet:"ann_date"`
-	EndDate         string  `parquet:"end_date"`
-	Roe             float64 `parquet:"roe"`
-	Roa             float64 `parquet:"roa"`
-	GrossProfitMargin  float64 `parquet:"grossprofit_margin"`
-	NetProfitMargin    float64 `parquet:"netprofit_margin"`
-	ProfitDedt         float64 `parquet:"profit_dedt"`
-	BasicEps           float64 `parquet:"basic_eps"`
-	NIncomeYoY         float64 `parquet:"dt_netprofit_yoy"`
-	RevenueYoY         float64 `parquet:"total_revenue_ratio"`
+	TsCode            string  `parquet:"ts_code"`
+	AnnDate           string  `parquet:"ann_date"`
+	EndDate           string  `parquet:"end_date"`
+	Roe               float64 `parquet:"roe"`
+	Roa               float64 `parquet:"roa"`
+	GrossProfitMargin float64 `parquet:"grossprofit_margin"`
+	NetProfitMargin   float64 `parquet:"netprofit_margin"`
+	ProfitDedt        float64 `parquet:"profit_dedt"`
+	BasicEps          float64 `parquet:"basic_eps"`
+	NIncomeYoY        float64 `parquet:"dt_netprofit_yoy"`
+	RevenueYoY        float64 `parquet:"total_revenue_ratio"`
 }
 
 type Income struct {
@@ -111,6 +116,38 @@ type IndexBar struct {
 }
 
 func (b DailyBar) AdjustedPrice() float64 {
+	return b.Close
+}
+
+func (b DailyBar) HasRawPrices() bool {
+	return b.RawOpen > 0 && b.RawHigh > 0 && b.RawLow > 0 && b.RawClose > 0 && b.AdjFactor > 0
+}
+
+func (b DailyBar) TradeOpen() float64 {
+	if b.RawOpen > 0 {
+		return b.RawOpen
+	}
+	return b.Open
+}
+
+func (b DailyBar) TradeHigh() float64 {
+	if b.RawHigh > 0 {
+		return b.RawHigh
+	}
+	return b.High
+}
+
+func (b DailyBar) TradeLow() float64 {
+	if b.RawLow > 0 {
+		return b.RawLow
+	}
+	return b.Low
+}
+
+func (b DailyBar) TradeClose() float64 {
+	if b.RawClose > 0 {
+		return b.RawClose
+	}
 	return b.Close
 }
 

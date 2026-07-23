@@ -5,7 +5,7 @@ Go 语言 A 股量化工具 — 数据拉取 · 策略回测 · 信号生成 · 
 ## 功能
 
 - **数据拉取**：Tushare 日线/基本面/财务/指数数据，带限速+重试+每日配额
-- **17 个策略**：短线(11) + 中线(5) + 长线(1)，可自由扩展
+- **21 个策略**：短线 + 中线 + 长线 + 横截面/波动突破，可自由扩展
 - **信号生成**：多策略聚合打分 → 买入/卖出排名，输出 table/csv/json
 - **回测引擎**：佣金/滑点建模，Sharpe/MaxDD/Calmar/胜率/盈亏比
 - **市场概况**：指数趋势 + 市场宽度 + 板块热度
@@ -31,6 +31,8 @@ go build -o go-quant ./cmd/go-quant/
 
 # 4. 查看信号
 ./go-quant signal -n 20
+./go-quant forward validate       # 回填前向测试收益
+./go-quant forward migrate        # 迁移旧版前向测试CSV
 ```
 
 ## 命令
@@ -40,6 +42,8 @@ go build -o go-quant ./cmd/go-quant/
 | `./go-quant fetch` | 拉取日线/基本面/财务/指数数据 |
 | `./go-quant signal` | 生成买卖信号（市场+新闻+持仓+策略） |
 | `./go-quant backtest` | 策略历史回测 |
+| `./go-quant forward validate` | 回填前向测试 1/3/5 日收益 |
+| `./go-quant forward migrate` | 迁移旧版前向测试 CSV schema |
 | `./go-quant list` | 查看所有策略 |
 
 详见 [docs/commands.md](docs/commands.md)
@@ -48,11 +52,15 @@ go build -o go-quant ./cmd/go-quant/
 
 | 类型 | 策略 | 说明 |
 |------|------|------|
-| 短线 | `limit_up` `sar` `kdj` `roc` `williams_r` `rsi` `mfi` `bull_flag` `bollinger` `donchian` `volume_breakout` | 1-21 天周期 |
-| 中线 | `ma_crossover` `etf_rotation` `macd` `ma_sticky` `value_ma60` | 20-60 天周期 |
+| 短线 | `limit_up` `sar` `kdj` `roc` `williams_r` `rsi` `mfi` `bull_flag` `bollinger` `donchian` `volume_breakout` `bottom_reversal` | 1-21 天周期 |
+| 中线 | `ma_crossover` `etf_rotation` `macd` `ma_sticky` `value_ma60` `relative_strength` `atr_breakout` `trend_pullback` | 20-120 天周期 |
 | 长线 | `dividend_deviation` | 600 天周期 |
 
 详见 [docs/strategies.md](docs/strategies.md)
+
+## 数据口径
+
+新拉取的日线数据同时保存真实 OHLC（`raw_*`）和前复权 OHLC。策略计算默认使用前复权价格；回测成交、涨跌停判断、信号展示价和前向验证使用真实价格。旧版 Parquet 没有 `raw_*` 字段，回测和前向验证会报错；重新执行 `fetch` 可补齐，临时排查可加 `--allow-adjusted-trades`。
 
 ## 持仓管理
 
@@ -79,7 +87,7 @@ quant-go/
 ├── internal/
 │   ├── config/                 # 配置管理
 │   ├── data/                   # Tushare API + Parquet 存储
-│   ├── strategy/               # 17 个策略实现
+│   ├── strategy/               # 21 个策略实现
 │   ├── backtest/               # 回测引擎 + 绩效指标
 │   ├── signal/                 # 多策略信号聚合
 │   ├── market/                 # 市场情绪分析

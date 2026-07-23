@@ -12,6 +12,7 @@ import (
 	"quant/internal/backtest"
 	"quant/internal/config"
 	"quant/internal/data"
+	"quant/internal/forward"
 	"quant/internal/market"
 	"quant/internal/news"
 	"quant/internal/portfolio"
@@ -22,8 +23,8 @@ import (
 )
 
 var (
-	cfgPath  string
-	cfg      *config.Config
+	cfgPath string
+	cfg     *config.Config
 )
 
 func main() {
@@ -37,6 +38,7 @@ func main() {
 	rootCmd.AddCommand(fetchCmd())
 	rootCmd.AddCommand(backtestCmd())
 	rootCmd.AddCommand(signalCmd())
+	rootCmd.AddCommand(forwardCmd())
 	rootCmd.AddCommand(analyzeCmd())
 	rootCmd.AddCommand(listCmd())
 
@@ -179,6 +181,7 @@ func backtestCmd() *cobra.Command {
 		endDate       string
 		capital       float64
 		topN          int
+		allowAdjusted bool
 	)
 
 	cmd := &cobra.Command{
@@ -223,9 +226,13 @@ func backtestCmd() *cobra.Command {
 			if startDate != "" {
 				bars = filterByDateRange(bars, startDate, endDate)
 			}
+			if q := data.CheckPriceDataQuality(bars); !q.HasCompleteRawPrices() && !allowAdjusted {
+				return fmt.Errorf("%s；回测成交需要真实价字段，请重新拉取行情数据，或临时使用 --allow-adjusted-trades", q.Summary())
+			}
 
 			sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
 			codeMap := data.GroupByCode(bars)
+			codes := sortedCodes(codeMap)
 			fmt.Printf("加载 %d 只股票, %d 条记录\n", len(codeMap), len(bars))
 
 			if capital == 0 {
@@ -238,28 +245,36 @@ func backtestCmd() *cobra.Command {
 			}
 
 			for _, s := range selectedStrategies {
+				if h, ok := s.(strategy.HistoricalUniverseUser); ok {
+					h.SetHistoricalUniverse(codeMap)
+				}
 				fmt.Printf("\n========== 策略: %s ==========\n", s.Name())
 				count := 0
 				var bestResult *backtest.Result
 				var bestCode string
 				var bestEquity float64
+				bestSet := false
+				var metricsList []backtest.PerformanceMetrics
 
-				for code, stockBars := range codeMap {
+				for _, code := range codes {
+					stockBars := codeMap[code]
 					sort.Slice(stockBars, func(i, j int) bool { return stockBars[i].TradeDate < stockBars[j].TradeDate })
 					if len(stockBars) < s.Warmup() {
 						continue
 					}
-					wrapFn := func(bars []data.DailyBar, idx int) int {
-						return int(s.Signal(bars, idx))
+					wrapFn := func(bars []data.DailyBar, idx int) strategy.SignalType {
+						return s.Signal(bars, idx)
 					}
 					result := backtest.Run(stockBars, wrapFn, btCfg)
 					if result.TradeCount > 0 {
 						returnPct := (result.FinalEquity - capital) / capital * 100
-						if returnPct > bestEquity {
+						if !bestSet || returnPct > bestEquity {
 							bestEquity = returnPct
 							bestResult = result
 							bestCode = code
+							bestSet = true
 						}
+						metricsList = append(metricsList, backtest.CalculateMetrics(result, capital, cfg.Backtest.RiskFreeRate, 252))
 						count++
 						if topN > 0 && count >= topN {
 							break
@@ -268,6 +283,7 @@ func backtestCmd() *cobra.Command {
 				}
 
 				fmt.Printf("有效回测: %d 只股票\n", count)
+				printBacktestAggregate(metricsList)
 				if bestResult != nil {
 					fmt.Printf("\n最佳表现: %s\n", bestCode)
 					metrics := backtest.CalculateMetrics(bestResult, capital, cfg.Backtest.RiskFreeRate, 252)
@@ -283,7 +299,8 @@ func backtestCmd() *cobra.Command {
 	cmd.Flags().StringVar(&startDate, "start", "", "起始日期 (YYYYMMDD)")
 	cmd.Flags().StringVar(&endDate, "end", "", "结束日期 (YYYYMMDD)")
 	cmd.Flags().Float64Var(&capital, "capital", 0, "初始资金")
-	cmd.Flags().IntVarP(&topN, "top", "n", 0, "只回测前 N 只股票 (0=全部)")
+	cmd.Flags().IntVarP(&topN, "top", "n", 0, "只回测前 N 只股票，按代码排序 (0=全部)")
+	cmd.Flags().BoolVar(&allowAdjusted, "allow-adjusted-trades", false, "允许用复权价近似成交价（仅用于旧数据临时验证）")
 
 	return cmd
 }
@@ -323,7 +340,6 @@ func signalCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("加载数据失败: %w", err)
 			}
-
 			sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
 			codeMap := data.GroupByCode(bars)
 
@@ -381,6 +397,16 @@ func signalCmd() *cobra.Command {
 					}
 				}
 			}
+			rawQuality := data.CheckPriceDataQuality(recentBarsForQuality(codeMap, 2))
+			hasRecentRawPrices := rawQuality.HasCompleteRawPrices()
+			if !hasRecentRawPrices {
+				fmt.Printf("警告: 最近交易日%s；将跳过依赖真实成交价的策略，持仓/前向验证需重拉数据后才准确\n", rawQuality.Summary())
+				selectedStrategies = filterStrategies(selectedStrategies, map[string]bool{"limit_up": true})
+				strategyNames = strategyNamesFrom(selectedStrategies)
+				if len(selectedStrategies) == 0 {
+					return fmt.Errorf("真实价字段缺失后没有可用策略")
+				}
+			}
 
 			if topN == 0 {
 				topN = cfg.Signal.TopN
@@ -410,11 +436,16 @@ func signalCmd() *cobra.Command {
 				portfolio.SaveReport(summary, cfg.Data.RawDir+"/reports")
 			}
 
-			results := signal.Generate(codeMap, selectedStrategies, topN*3, stockNames)
+			results := signal.GenerateWithContext(codeMap, selectedStrategies, topN, stockNames, marketStatus)
 
 			if len(results) == 0 {
 				fmt.Println("今日无交易信号")
 				return nil
+			}
+
+			tradingDates := data.LoadTradeDates(cfg.Data.RawDir, bars)
+			if err := forward.Record(cfg.Data.RawDir+"/../forward_test", results, marketStatus, 5, tradingDates); err != nil && format == "table" {
+				fmt.Printf("前向测试记录失败: %v\n", err)
 			}
 
 			return reporter.Print(results)
@@ -425,6 +456,53 @@ func signalCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&format, "format", "f", "table", "输出格式: table, csv, json")
 	cmd.Flags().IntVarP(&topN, "top", "n", 0, "显示前 N 条信号")
 
+	return cmd
+}
+
+func forwardCmd() *cobra.Command {
+	var dir string
+	var allowAdjusted bool
+	cmd := &cobra.Command{
+		Use:   "forward",
+		Short: "管理前向测试记录",
+	}
+	cmd.PersistentFlags().StringVar(&dir, "dir", "data/forward_test", "前向测试记录目录")
+
+	validateCmd := &cobra.Command{
+		Use:   "validate",
+		Short: "用本地行情回填前向测试收益",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			bars, err := data.ReadParquetDir(cfg.Data.RawDir + "/daily")
+			if err != nil {
+				return fmt.Errorf("加载数据失败: %w", err)
+			}
+			if q := data.CheckPriceDataQuality(bars); !q.HasCompleteRawPrices() && !allowAdjusted {
+				return fmt.Errorf("%s；前向验证需要真实价字段，请重新拉取行情数据，或临时使用 --allow-adjusted-trades", q.Summary())
+			}
+			codeMap := data.GroupByCode(bars)
+			updated, err := forward.Validate(dir, codeMap)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("前向测试验证完成: 更新 %d 个字段\n", updated)
+			return nil
+		},
+	}
+	validateCmd.Flags().BoolVar(&allowAdjusted, "allow-adjusted-trades", false, "允许用复权价近似前向验证价格（仅用于旧数据临时验证）")
+	migrateCmd := &cobra.Command{
+		Use:   "migrate",
+		Short: "迁移前向测试记录到当前 CSV schema",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := forward.Migrate(dir); err != nil {
+				return err
+			}
+			fmt.Printf("前向测试记录已迁移: %s\n", dir)
+			return nil
+		},
+	}
+	cmd.AddCommand(validateCmd)
+	cmd.AddCommand(migrateCmd)
 	return cmd
 }
 
@@ -449,7 +527,7 @@ func analyzeCmd() *cobra.Command {
 			today := time.Now().Format("20060102")
 			yesterday := time.Now().AddDate(0, 0, -1).Format("20060102")
 			factors, err := client.FetchAdjFactors(ctx, code, yesterday, today)
-			if err == nil && len(factors) > 0 {
+			if err == nil && len(factors) > 0 && !r.Latest.HasRawPrices() {
 				r.SetAdjFactor(factors[len(factors)-1].AdjFactor)
 			}
 
@@ -506,4 +584,88 @@ func filterByDateRange(bars []data.DailyBar, start, end string) []data.DailyBar 
 		filtered = append(filtered, b)
 	}
 	return filtered
+}
+
+func sortedCodes(codeMap map[string][]data.DailyBar) []string {
+	codes := make([]string, 0, len(codeMap))
+	for code := range codeMap {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return codes
+}
+
+func filterStrategies(strategies []strategy.Strategy, skip map[string]bool) []strategy.Strategy {
+	filtered := make([]strategy.Strategy, 0, len(strategies))
+	for _, s := range strategies {
+		if skip[s.Name()] {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	return filtered
+}
+
+func strategyNamesFrom(strategies []strategy.Strategy) []string {
+	names := make([]string, 0, len(strategies))
+	for _, s := range strategies {
+		names = append(names, s.Name())
+	}
+	return names
+}
+
+func recentBarsForQuality(codeMap map[string][]data.DailyBar, lookback int) []data.DailyBar {
+	if lookback <= 0 {
+		lookback = 1
+	}
+	recent := make([]data.DailyBar, 0, len(codeMap)*lookback)
+	for _, bars := range codeMap {
+		if len(bars) == 0 {
+			continue
+		}
+		start := len(bars) - lookback
+		if start < 0 {
+			start = 0
+		}
+		recent = append(recent, bars[start:]...)
+	}
+	return recent
+}
+
+func printBacktestAggregate(metricsList []backtest.PerformanceMetrics) {
+	if len(metricsList) == 0 {
+		return
+	}
+	returns := make([]float64, 0, len(metricsList))
+	var sumReturn, sumAnnual, sumDD, sumSharpe float64
+	winStocks := 0
+	totalTrades := 0
+	for _, m := range metricsList {
+		returns = append(returns, m.TotalReturn)
+		sumReturn += m.TotalReturn
+		sumAnnual += m.AnnualizedReturn
+		sumDD += m.MaxDrawdown
+		sumSharpe += m.SharpeRatio
+		totalTrades += m.TotalTrades
+		if m.TotalReturn > 0 {
+			winStocks++
+		}
+	}
+	sort.Float64s(returns)
+	median := returns[len(returns)/2]
+	if len(returns)%2 == 0 {
+		median = (returns[len(returns)/2-1] + returns[len(returns)/2]) / 2
+	}
+	n := float64(len(metricsList))
+	fmt.Printf("\n========== 样本汇总 ==========\n")
+	fmt.Printf("样本数:       %d 只\n", len(metricsList))
+	fmt.Printf("平均收益:     %11.2f%%\n", sumReturn/n)
+	fmt.Printf("中位收益:     %11.2f%%\n", median)
+	fmt.Printf("平均年化:     %11.2f%%\n", sumAnnual/n)
+	fmt.Printf("平均最大回撤: %11.2f%%\n", sumDD/n)
+	fmt.Printf("平均夏普:     %11.2f\n", sumSharpe/n)
+	fmt.Printf("正收益股票:   %d / %d\n", winStocks, len(metricsList))
+	fmt.Printf("总交易次数:   %d\n", totalTrades)
+	fmt.Printf("收益区间:     %11.2f%% ~ %.2f%%\n", returns[0], returns[len(returns)-1])
+	fmt.Println("==============================")
 }

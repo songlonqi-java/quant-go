@@ -57,11 +57,11 @@ func (r *Reporter) printTable(results []SignalResult) {
 	if len(buyResults) > 0 {
 		fmt.Println("\n========== 买入建议 ==========")
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "排名\t代码\t名称\t日期\t收盘价\t信号数\t综合评分\t建议")
+		fmt.Fprintln(w, "排名\t代码\t名称\t日期\t收盘价\t信号数\t综合评分\t置信度\t建议仓位\t风险\t建议")
 		for i, r := range buyResults {
 			strategies := formatStrategies(r.Strategies)
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%.2f\t%s\t%.2f\t%s\n",
-				i+1, r.Code, r.Name, r.Date, r.Close, strategies, r.TotalScore, r.Recommendation())
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%.2f\t%s\t%.2f\t%.0f\t%.1f%%\t%s\t%s\n",
+				i+1, r.Code, r.Name, r.Date, r.Close, strategies, r.TotalScore, r.Confidence, r.PositionPct, strings.Join(r.RiskLabels, ","), r.Recommendation())
 		}
 		w.Flush()
 	}
@@ -69,14 +69,14 @@ func (r *Reporter) printTable(results []SignalResult) {
 	if len(sellResults) > 0 {
 		fmt.Println("\n========== 卖出建议 ==========")
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "排名\t代码\t名称\t日期\t收盘价\t信号数\t综合评分\t建议")
+		fmt.Fprintln(w, "排名\t代码\t名称\t日期\t收盘价\t信号数\t综合评分\t置信度\t建议仓位\t风险\t建议")
 		sort.Slice(sellResults, func(i, j int) bool {
 			return sellResults[i].TotalScore < sellResults[j].TotalScore
 		})
 		for i, r := range sellResults {
 			strategies := formatStrategies(r.Strategies)
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%.2f\t%s\t%.2f\t%s\n",
-				i+1, r.Code, r.Name, r.Date, r.Close, strategies, r.TotalScore, r.Recommendation())
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%.2f\t%s\t%.2f\t%.0f\t%.1f%%\t%s\t%s\n",
+				i+1, r.Code, r.Name, r.Date, r.Close, strategies, r.TotalScore, r.Confidence, r.PositionPct, strings.Join(r.RiskLabels, ","), r.Recommendation())
 		}
 		w.Flush()
 	}
@@ -86,7 +86,7 @@ func (r *Reporter) printTable(results []SignalResult) {
 
 func (r *Reporter) printCSV(results []SignalResult) error {
 	w := csv.NewWriter(os.Stdout)
-	w.Write([]string{"排名", "代码", "名称", "日期", "收盘价", "买入信号", "卖出信号", "综合评分", "建议", "策略详情"})
+	w.Write([]string{"排名", "代码", "名称", "日期", "收盘价", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "风险标签", "建议", "策略详情"})
 	for i, res := range results {
 		w.Write([]string{
 			fmt.Sprintf("%d", i+1),
@@ -97,6 +97,9 @@ func (r *Reporter) printCSV(results []SignalResult) error {
 			fmt.Sprintf("%d", res.BuyCount),
 			fmt.Sprintf("%d", res.SellCount),
 			fmt.Sprintf("%.2f", res.TotalScore),
+			fmt.Sprintf("%.0f", res.Confidence),
+			fmt.Sprintf("%.1f%%", res.PositionPct),
+			strings.Join(res.RiskLabels, ";"),
 			res.Recommendation(),
 			formatStrategies(res.Strategies),
 		})
@@ -115,8 +118,14 @@ func (r *Reporter) printJSON(results []SignalResult) error {
 		BuySignals     int                `json:"buy_signals"`
 		SellSignals    int                `json:"sell_signals"`
 		TotalScore     float64            `json:"total_score"`
+		RawScore       float64            `json:"raw_score"`
+		Confidence     float64            `json:"confidence"`
+		PositionPct    float64            `json:"position_pct"`
+		RiskLabels     []string           `json:"risk_labels"`
+		Reasons        []string           `json:"reasons"`
 		Recommendation string             `json:"recommendation"`
 		Strategies     map[string]string  `json:"strategies"`
+		GroupScores    map[string]float64 `json:"group_scores"`
 	}
 
 	var output []jsonOutput
@@ -134,8 +143,14 @@ func (r *Reporter) printJSON(results []SignalResult) error {
 			BuySignals:     r.BuyCount,
 			SellSignals:    r.SellCount,
 			TotalScore:     r.TotalScore,
+			RawScore:       r.RawScore,
+			Confidence:     r.Confidence,
+			PositionPct:    r.PositionPct,
+			RiskLabels:     r.RiskLabels,
+			Reasons:        r.Reasons,
 			Recommendation: r.Recommendation(),
 			Strategies:     strats,
+			GroupScores:    r.GroupScores,
 		})
 	}
 

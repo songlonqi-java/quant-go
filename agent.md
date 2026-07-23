@@ -1,6 +1,6 @@
 # go-quant Agent 指南
 
-A 股量化工具：日线数据拉取 + 17 个策略回测 + 买卖信号 + 持仓管理 + 新闻热度 + 市场情绪。
+A 股量化工具：日线数据拉取 + 21 个策略回测 + 买卖信号 + 持仓管理 + 新闻热度 + 市场情绪 + 前向测试。
 
 ## 快速开始
 
@@ -16,16 +16,18 @@ go build -o go-quant ./cmd/go-quant/
 
 # 每日使用
 ./go-quant fetch --today        # 盘后拉今日数据
-./go-quant signal -n 20         # 生成买卖信号
+./go-quant signal -n 20         # 生成买卖信号并写入前向测试
 ./go-quant backtest -s macd     # 回测
+./go-quant forward validate     # 回填前向测试收益
+./go-quant forward migrate      # 迁移旧版前向测试CSV
 ```
 
 ## 文档索引
 
 | 文档 | 内容 |
 |------|------|
-| [docs/commands.md](docs/commands.md) | 完整 CLI 命令参考（fetch/signal/backtest/list） |
-| [docs/strategies.md](docs/strategies.md) | 全部 17 个策略详解（短线11/中线5/长线1） |
+| [docs/commands.md](docs/commands.md) | 完整 CLI 命令参考（fetch/signal/backtest/forward/list） |
+| [docs/strategies.md](docs/strategies.md) | 全部 21 个策略详解（短线12/中线8/长线1） |
 | [docs/portfolio.md](docs/portfolio.md) | 持仓管理：交易流水 → 自动盈亏 + 报表导出 |
 
 ## 仓库结构
@@ -35,7 +37,7 @@ cmd/go-quant/main.go            # Cobra CLI 入口
 internal/
   config/config.go              # YAML 配置 + 环境变量覆盖
   data/                         # 数据层：Tushare API / Parquet存储 / 基本面Store
-  strategy/                     # 17 个策略（interface → registry → 各实现）
+  strategy/                     # 21 个策略（interface → registry → 各实现）
   backtest/                     # 回测引擎 + 绩效指标
   signal/                       # 多策略信号聚合 + 输出格式化
   market/sentiment.go           # 市场情绪：指数/宽度/板块热度
@@ -83,7 +85,7 @@ backtest:
 
 | 路径 | 内容 |
 |------|------|
-| `data/raw/daily/*.parquet` | 日线 OHLCV（按年） |
+| `data/raw/daily/*.parquet` | 日线 OHLCV（按年，含前复权价和真实 `raw_*` 价格） |
 | `data/raw/daily_basic/*.parquet` | PE/PB/市值/股息率 |
 | `data/raw/fina/*.parquet` | 财务指标 + 利润表 |
 | `data/raw/index/*.parquet` | 上证/深证/创业板指数 + 沪深300成分股 |
@@ -105,10 +107,11 @@ type Strategy interface {
 ```
 
 无状态：给定历史 bars + 当前 idx，返回信号。新策略实现该接口并在 `registry.go` 注册即可。
+基本面策略实现 `FundStoreUser`，实时横截面策略实现 `UniverseUser`，需要历史横截面回测的策略实现 `HistoricalUniverseUser`。
 
 ### 信号聚合
 
-多策略并发运行 → 每个策略独立判断 → Buy +1 / Sell -1 → 加权综合评分 → 排名输出。基本面策略可通过 `FundStoreUser` 接口自动注入 PE/ROE/市值数据。
+多策略并发运行 → 每个策略独立判断 → 按策略家族限权 → 市场情绪调权 → 置信度/仓位/风险标签 → 排名输出。基本面策略可通过 `FundStoreUser` 接口自动注入 PE/ROE/市值数据；横截面策略可通过 `UniverseUser` 注入股票池。
 
 ### 市值过滤
 
@@ -125,6 +128,7 @@ type Strategy interface {
 | 无盘中数据 | Tushare 免费 API 仅日线收盘后数据 |
 | 全量内存加载 | 1171 只 × 6 年 ≈ 300MB 内存 |
 | 幸存者偏差 | `stock_basic` 仅返回当前上市股票 |
+| 旧行情 schema | 旧版 Parquet 缺少真实价字段，需重跑 `fetch`；临时验证可用 `--allow-adjusted-trades` |
 | 板块分类 | 基于 Tushare `industry` 字段（证监会行业分类） |
 | 新闻源 | 新浪财经滚动快讯（最近 80 条） |
 
@@ -133,7 +137,7 @@ type Strategy interface {
 1. Token 通过配置文件或环境变量注入，**禁止硬编码**
 2. Parquet 写入必须使用原子操作（先写 .tmp 再 rename）
 3. 新策略放 `internal/strategy/` 下，在 `registry.go` 注册
-4. 构建前运行 `go vet ./...`
+4. 改动后至少运行 `gofmt -w ...` 和 `go test ./...`
 5. `config.yaml` 和 `data/` 已加入 `.gitignore`
 6. `portfolio.yaml` 是个人交易流水，可提交追踪
 7. Tushare 接口源码参考：`~/github/tushare`

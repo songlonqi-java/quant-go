@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/parquet-go/parquet-go"
@@ -33,6 +34,32 @@ func ReadParquetDir(dir string) ([]DailyBar, error) {
 		allBars = append(allBars, bars...)
 	}
 	return allBars, nil
+}
+
+type PriceDataQuality struct {
+	Total      int
+	MissingRaw int
+}
+
+func CheckPriceDataQuality(bars []DailyBar) PriceDataQuality {
+	q := PriceDataQuality{Total: len(bars)}
+	for _, b := range bars {
+		if !b.HasRawPrices() {
+			q.MissingRaw++
+		}
+	}
+	return q
+}
+
+func (q PriceDataQuality) HasCompleteRawPrices() bool {
+	return q.Total > 0 && q.MissingRaw == 0
+}
+
+func (q PriceDataQuality) Summary() string {
+	if q.Total == 0 {
+		return "无行情数据"
+	}
+	return fmt.Sprintf("真实价字段缺失 %d/%d 行", q.MissingRaw, q.Total)
 }
 
 func ReadParquetFile(filepath string) ([]DailyBar, error) {
@@ -178,6 +205,30 @@ func GroupByCode(bars []DailyBar) map[string][]DailyBar {
 		m[b.TsCode] = append(m[b.TsCode], b)
 	}
 	return m
+}
+
+func TradingDatesFromBars(bars []DailyBar) []string {
+	seen := make(map[string]bool)
+	for _, b := range bars {
+		if b.TradeDate != "" {
+			seen[b.TradeDate] = true
+		}
+	}
+	dates := make([]string, 0, len(seen))
+	for d := range seen {
+		dates = append(dates, d)
+	}
+	sort.Strings(dates)
+	return dates
+}
+
+func LoadTradeDates(rawDir string, fallbackBars []DailyBar) []string {
+	calPath := filepath.Join(rawDir, "trade_cal.parquet")
+	cal, err := readGenericParquet[TradeCal](calPath)
+	if err == nil && len(cal) > 0 {
+		return TradingDays(cal)
+	}
+	return TradingDatesFromBars(fallbackBars)
 }
 
 func LoadStockNames(path string) map[string]string {

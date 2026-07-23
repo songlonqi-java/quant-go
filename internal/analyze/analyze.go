@@ -3,8 +3,10 @@ package analyze
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 
+	"quant/internal/config"
 	"quant/internal/data"
 	"quant/internal/strategy"
 
@@ -33,11 +35,11 @@ type Report struct {
 	High60 float64
 	Low60  float64
 
-	PE      float64
-	PETTM   float64
-	PB      float64
+	PE        float64
+	PETTM     float64
+	PB        float64
 	MarketCap float64
-	DivYield float64
+	DivYield  float64
 	Turnover  float64
 
 	BuySignals  []string
@@ -45,23 +47,30 @@ type Report struct {
 }
 
 func Run(code, configPath string) (*Report, error) {
-	bars, err := data.ReadParquetDir("./data/raw/daily")
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, err
 	}
 
-	var stockBars []data.DailyBar
-	for _, b := range bars {
-		if b.TsCode == code {
-			stockBars = append(stockBars, b)
-		}
+	bars, err := data.ReadParquetDir(filepath.Join(cfg.Data.RawDir, "daily"))
+	if err != nil {
+		return nil, err
 	}
+
+	sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
+	codeMap := data.GroupByCode(bars)
+	for c, stockBars := range codeMap {
+		sort.Slice(stockBars, func(i, j int) bool { return stockBars[i].TradeDate < stockBars[j].TradeDate })
+		codeMap[c] = stockBars
+	}
+
+	stockBars := codeMap[code]
 	if len(stockBars) == 0 {
 		return nil, fmt.Errorf("未找到 %s 的数据", code)
 	}
 
-	sort.Slice(stockBars, func(i, j int) bool { return stockBars[i].TradeDate < stockBars[j].TradeDate })
 	last := len(stockBars) - 1
+	fundStore := loadFundStore(cfg.Data.RawDir)
 
 	r := &Report{
 		Code:      code,
@@ -69,19 +78,22 @@ func Run(code, configPath string) (*Report, error) {
 		DateRange: fmt.Sprintf("%s ~ %s", stockBars[0].TradeDate, stockBars[last].TradeDate),
 		Latest:    stockBars[last],
 	}
+	if r.Latest.HasRawPrices() {
+		r.RawPrice = r.Latest.RawClose
+		r.AdjFactor = r.Latest.AdjFactor
+	}
 
-	r.loadNameAndIndustry()
+	r.loadNameAndIndustry(filepath.Join(cfg.Data.RawDir, "stocks.parquet"))
 	r.loadMA(stockBars, last)
 	r.loadPriceStats(stockBars, last)
-	r.loadFundamentals(code, stockBars[last].TradeDate)
-	r.loadStrategySignals(stockBars, last)
-	r.tryLoadAdjFactor(code, configPath)
+	r.loadFundamentals(fundStore, code, stockBars[last].TradeDate)
+	r.loadStrategySignals(stockBars, last, codeMap, fundStore)
 
 	return r, nil
 }
 
-func (r *Report) loadNameAndIndustry() {
-	f, err := os.Open("./data/raw/stocks.parquet")
+func (r *Report) loadNameAndIndustry(path string) {
+	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
@@ -130,35 +142,35 @@ func (r *Report) loadPriceStats(bars []data.DailyBar, idx int) {
 	}
 }
 
-func (r *Report) loadFundamentals(code, latestDate string) {
-	year := latestDate[:4]
-	path := fmt.Sprintf("./data/raw/daily_basic/%s.parquet", year)
-	f, err := os.Open(path)
-	if err != nil {
+func (r *Report) loadFundamentals(store *data.FundamentalStore, code, latestDate string) {
+	if store == nil {
 		return
 	}
-	defer f.Close()
-	reader := parquet.NewReader(f, parquet.SchemaOf(&data.DailyBasic{}))
-	defer reader.Close()
-	for {
-		var b data.DailyBasic
-		if err := reader.Read(&b); err != nil {
-			break
-		}
-		if b.TsCode == code {
-			r.PE = b.Pe
-			r.PETTM = b.PeTTM
-			r.PB = b.Pb
-			r.MarketCap = b.TotalMv
-			r.DivYield = b.DvRatio
-			r.Turnover = b.TurnoverRate
-		}
+	b := store.GetDailyBasicAsOf(code, latestDate)
+	if b == nil {
+		return
 	}
+	r.PE = b.Pe
+	r.PETTM = b.PeTTM
+	r.PB = b.Pb
+	r.MarketCap = b.TotalMv
+	r.DivYield = b.DvRatio
+	r.Turnover = b.TurnoverRate
 }
 
-func (r *Report) loadStrategySignals(bars []data.DailyBar, idx int) {
+func (r *Report) loadStrategySignals(bars []data.DailyBar, idx int, codeMap map[string][]data.DailyBar, fundStore *data.FundamentalStore) {
 	reg := strategy.DefaultRegistry()
-	for _, s := range reg.All() {
+	strategies := reg.All()
+	sort.Slice(strategies, func(i, j int) bool { return strategies[i].Name() < strategies[j].Name() })
+	for _, s := range strategies {
+		if fundStore != nil {
+			if u, ok := s.(strategy.FundStoreUser); ok {
+				u.SetFundStore(fundStore)
+			}
+		}
+		if u, ok := s.(strategy.UniverseUser); ok {
+			u.SetUniverse(codeMap)
+		}
 		if idx < s.Warmup() {
 			continue
 		}
@@ -172,12 +184,24 @@ func (r *Report) loadStrategySignals(bars []data.DailyBar, idx int) {
 	}
 }
 
-func (r *Report) tryLoadAdjFactor(code, configPath string) {
-	cfg, err := os.ReadFile(configPath)
-	if err != nil {
-		return
+func loadFundStore(rawDir string) *data.FundamentalStore {
+	fetcher := data.NewFetcher(nil, rawDir, nil)
+	store := data.NewFundamentalStore()
+
+	basicStore, err := fetcher.LoadDailyBasicStore()
+	if err == nil && basicStore != nil {
+		store.MergeFrom(basicStore)
 	}
-	_ = cfg
+
+	finaStore, err := fetcher.LoadFinaStore()
+	if err == nil && finaStore != nil {
+		store.MergeFrom(finaStore)
+	}
+
+	if !store.HasData() {
+		return nil
+	}
+	return store
 }
 
 func (r *Report) SetAdjFactor(factor float64) {

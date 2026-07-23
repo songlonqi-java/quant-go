@@ -17,10 +17,10 @@ type Config struct {
 }
 
 type TushareConfig struct {
-	Token         string `yaml:"token"`
-	BaseURL       string `yaml:"base_url"`
-	RateLimitMs   int    `yaml:"rate_limit_ms"`
-	DailyCallLimit int   `yaml:"daily_call_limit"`
+	Token          string `yaml:"token"`
+	BaseURL        string `yaml:"base_url"`
+	RateLimitMs    int    `yaml:"rate_limit_ms"`
+	DailyCallLimit int    `yaml:"daily_call_limit"`
 }
 
 type DataConfig struct {
@@ -78,6 +78,8 @@ var defaultConfig = Config{
 			"dividend_deviation", "bull_flag",
 			"kdj", "williams_r", "donchian", "mfi",
 			"sar", "roc", "ma_sticky", "limit_up",
+			"bottom_reversal", "relative_strength", "atr_breakout",
+			"trend_pullback",
 		},
 		TopN: 20,
 	},

@@ -6,10 +6,10 @@ import "quant/internal/data"
 // 前提: 股票从高点回落后, 在低位出现放量上涨 → 博超跌反弹, 2-3天离场
 // 质量过滤: PE>0(盈利) + 市值下限 + 非ST + 有新闻提及(外部传入)
 type BottomReversal struct {
-	Lookback        int     // 回看天数 20
-	DropThreshold   float64 // 跌幅阈值 -15% (20日内跌超此幅度才算低位)
-	VolumeRatio     float64 // 放量倍数 2.0
-	MinMarketCap    float64 // 最小市值(亿) 100
+	Lookback      int     // 回看天数 20
+	DropThreshold float64 // 跌幅阈值 -15% (20日内跌超此幅度才算低位)
+	VolumeRatio   float64 // 放量倍数 2.0
+	MinMarketCap  float64 // 最小市值(亿) 100
 	MinTurnover   float64 // 最小换手率 0.5
 	fundStore     *data.FundamentalStore
 }
@@ -83,7 +83,7 @@ func (b *BottomReversal) Signal(bars []data.DailyBar, idx int) SignalType {
 			if mv > 0 && mv < b.MinMarketCap*10000 {
 				return Hold
 			}
-			pe, _, ok := b.fundStore.GetLatestPE(code)
+			pe, _, ok := b.fundStore.GetPEAsOf(code, bars[idx].TradeDate)
 			if ok && pe <= 0 {
 				return Hold
 			}

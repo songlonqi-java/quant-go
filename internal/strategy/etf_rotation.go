@@ -74,7 +74,7 @@ func (e *ETFRotation) Score(bars []data.DailyBar, idx int) float64 {
 	momentum := (bars[idx].Close - bars[idx-e.MomentumPeriod].Close) / bars[idx-e.MomentumPeriod].Close * 100
 	if e.fundStore != nil {
 		code := bars[idx].TsCode
-		pe, _, ok := e.fundStore.GetLatestPE(code)
+		pe, _, ok := e.fundStore.GetPEAsOf(code, bars[idx].TradeDate)
 		if ok && pe > 0 && pe < 30 {
 			momentum += 5
 		}

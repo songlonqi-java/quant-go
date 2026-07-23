@@ -47,7 +47,7 @@ func (d *DividendDeviation) Signal(bars []data.DailyBar, idx int) SignalType {
 
 	if buySig && d.fundStore != nil {
 		code := bars[idx].TsCode
-		dv := d.fundStore.GetDailyBasic(code, bars[idx].TradeDate)
+		dv := d.fundStore.GetDailyBasicAsOf(code, bars[idx].TradeDate)
 		if dv != nil && dv.DvRatio > 0 && dv.DvRatio < 15 {
 			return Hold
 		}
@@ -74,7 +74,7 @@ func (d *DividendDeviation) Score(bars []data.DailyBar, idx int) float64 {
 
 	if d.fundStore != nil {
 		code := bars[idx].TsCode
-		if dv := d.fundStore.GetDailyBasic(code, bars[idx].TradeDate); dv != nil && dv.DvRatio > 3 {
+		if dv := d.fundStore.GetDailyBasicAsOf(code, bars[idx].TradeDate); dv != nil && dv.DvRatio > 3 {
 			score += 10
 		}
 	}

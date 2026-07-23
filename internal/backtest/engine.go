@@ -1,14 +1,18 @@
 package backtest
 
-import "quant/internal/data"
+import (
+	"quant/internal/data"
+	"quant/internal/strategy"
+)
 
 type Trade struct {
-	Date   string
-	Action string
-	Price  float64
-	Shares float64
-	Cash   float64
-	Total  float64
+	Date       string
+	SignalDate string
+	Action     string
+	Price      float64
+	Shares     float64
+	Cash       float64
+	Total      float64
 }
 
 type EquityPoint struct {
@@ -20,6 +24,7 @@ type Config struct {
 	InitialCapital float64
 	Commission     float64
 	Slippage       float64
+	LimitPct       float64
 }
 
 func DefaultConfig() Config {
@@ -27,19 +32,24 @@ func DefaultConfig() Config {
 		InitialCapital: 100000.0,
 		Commission:     0.0003,
 		Slippage:       0.0001,
+		LimitPct:       0.095,
 	}
 }
 
 type Result struct {
-	Trades      []Trade
-	EquityCurve []EquityPoint
-	FinalEquity float64
-	TradeCount  int
+	Trades         []Trade
+	EquityCurve    []EquityPoint
+	FinalEquity    float64
+	TradeCount     int
+	SkippedSignals int
 }
 
-func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) int, cfg Config) *Result {
+func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) strategy.SignalType, cfg Config) *Result {
 	if len(bars) < 2 {
 		return &Result{FinalEquity: cfg.InitialCapital}
+	}
+	if cfg.LimitPct <= 0 {
+		cfg.LimitPct = DefaultConfig().LimitPct
 	}
 
 	cash := cfg.InitialCapital
@@ -48,66 +58,101 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) int,
 	var trades []Trade
 	var equity []EquityPoint
 	tradeCount := 0
+	skippedSignals := 0
+	pendingSignal := strategy.Hold
+	pendingSignalDate := ""
 
 	for i := 0; i < len(bars); i++ {
-		closePrice := bars[i].Close
-		sig := signalFn(bars, i)
+		closePrice := bars[i].TradeClose()
 
-		if !holding && sig == 1 {
-			execPrice := closePrice * (1 + cfg.Slippage)
-			available := cash
-			if available > 0 && execPrice > 0 {
-				shares = available / execPrice
-				cost := shares * execPrice * cfg.Commission
-				cash = cash - shares*execPrice - cost
-				holding = true
-				tradeCount++
-				trades = append(trades, Trade{
-					Date:   bars[i].TradeDate,
-					Action: "BUY",
-					Price:  execPrice,
-					Shares: shares,
-					Cash:   cash,
-					Total:  cash + shares*closePrice,
-				})
+		if i > 0 {
+			prev := bars[i-1]
+			switch pendingSignal {
+			case strategy.Buy:
+				if !holding && canBuyAtOpen(prev, bars[i], cfg.LimitPct) {
+					execPrice := bars[i].TradeOpen() * (1 + cfg.Slippage)
+					available := cash
+					if available > 0 && execPrice > 0 {
+						shares = available / (execPrice * (1 + cfg.Commission))
+						cost := shares * execPrice * cfg.Commission
+						cash = cash - shares*execPrice - cost
+						holding = true
+						tradeCount++
+						trades = append(trades, Trade{
+							Date:       bars[i].TradeDate,
+							SignalDate: pendingSignalDate,
+							Action:     "BUY",
+							Price:      execPrice,
+							Shares:     shares,
+							Cash:       cash,
+							Total:      cash + shares*closePrice,
+						})
+					}
+				} else if !holding {
+					skippedSignals++
+				}
+			case strategy.Sell:
+				if holding && canSellAtOpen(prev, bars[i], cfg.LimitPct) {
+					execPrice := bars[i].TradeOpen() * (1 - cfg.Slippage)
+					proceeds := shares * execPrice
+					cost := proceeds * cfg.Commission
+					cash += proceeds - cost
+					shares = 0
+					holding = false
+					tradeCount++
+					trades = append(trades, Trade{
+						Date:       bars[i].TradeDate,
+						SignalDate: pendingSignalDate,
+						Action:     "SELL",
+						Price:      execPrice,
+						Shares:     0,
+						Cash:       cash,
+						Total:      cash,
+					})
+				} else if holding {
+					skippedSignals++
+				}
 			}
-		} else if holding && sig == -1 {
-			execPrice := closePrice * (1 - cfg.Slippage)
-			proceeds := shares * execPrice
-			cost := proceeds * cfg.Commission
-			cash += proceeds - cost
-			shares = 0
-			holding = false
-			tradeCount++
-			trades = append(trades, Trade{
-				Date:   bars[i].TradeDate,
-				Action: "SELL",
-				Price:  execPrice,
-				Shares: 0,
-				Cash:   cash,
-				Total:  cash,
-			})
 		}
 
 		totalValue := cash + shares*closePrice
-		action := "HOLD"
-		if !holding {
-			action = "EMPTY"
-		}
 		equity = append(equity, EquityPoint{Date: bars[i].TradeDate, Value: totalValue})
 
-		if len(trades) > 0 && trades[len(trades)-1].Date == bars[i].TradeDate {
-			continue
-		}
-		_ = action
+		pendingSignal = signalFn(bars, i)
+		pendingSignalDate = bars[i].TradeDate
 	}
 
-	finalEquity := cash + shares*bars[len(bars)-1].Close
+	finalEquity := cash + shares*bars[len(bars)-1].TradeClose()
 
 	return &Result{
-		Trades:      trades,
-		EquityCurve: equity,
-		FinalEquity: finalEquity,
-		TradeCount:  tradeCount,
+		Trades:         trades,
+		EquityCurve:    equity,
+		FinalEquity:    finalEquity,
+		TradeCount:     tradeCount,
+		SkippedSignals: skippedSignals,
 	}
+}
+
+func canBuyAtOpen(prev, cur data.DailyBar, limitPct float64) bool {
+	open := cur.TradeOpen()
+	if open <= 0 || cur.Vol <= 0 {
+		return false
+	}
+	prevClose := prev.TradeClose()
+	if prevClose > 0 && open >= prevClose*(1+limitPct) {
+		return false
+	}
+	return true
+}
+
+func canSellAtOpen(prev, cur data.DailyBar, limitPct float64) bool {
+	open := cur.TradeOpen()
+	if open <= 0 || cur.Vol <= 0 {
+		return false
+	}
+	prevClose := prev.TradeClose()
+	if prevClose > 0 && open <= prevClose*(1-limitPct) {
+		return false
+	}
+	return true
 }

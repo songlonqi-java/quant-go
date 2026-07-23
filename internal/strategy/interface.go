@@ -45,3 +45,11 @@ type StrategyOutput struct {
 type FundStoreUser interface {
 	SetFundStore(fs interface{})
 }
+
+type UniverseUser interface {
+	SetUniverse(barsMap map[string][]data.DailyBar)
+}
+
+type HistoricalUniverseUser interface {
+	SetHistoricalUniverse(barsMap map[string][]data.DailyBar)
+}

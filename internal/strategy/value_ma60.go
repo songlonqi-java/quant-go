@@ -41,9 +41,10 @@ func (v *ValueMA60) Signal(bars []data.DailyBar, idx int) SignalType {
 	}
 	if sig == Buy && v.fundStore != nil {
 		code := bars[idx].TsCode
-		mv := v.fundStore.GetMarketCap(code, bars[idx].TradeDate)
-		roe, hasROE := v.fundStore.GetLatestROE(code)
-		isHS := v.fundStore.IsHs300(code)
+		date := bars[idx].TradeDate
+		mv := v.fundStore.GetMarketCap(code, date)
+		roe, hasROE := v.fundStore.GetROEAsOf(code, date)
+		isHS := v.fundStore.IsHs300AsOf(code, date)
 		if isHS && mv > 0 && mv < 5000000 && hasROE && roe >= 15 {
 			return Buy
 		}
@@ -89,10 +90,11 @@ func (v *ValueMA60) Score(bars []data.DailyBar, idx int) float64 {
 
 	if v.fundStore != nil {
 		code := bars[idx].TsCode
-		if roe, ok := v.fundStore.GetLatestROE(code); ok && roe > 0 {
+		date := bars[idx].TradeDate
+		if roe, ok := v.fundStore.GetROEAsOf(code, date); ok && roe > 0 {
 			score += roe * 0.2
 		}
-		if v.fundStore.IsHs300(code) {
+		if v.fundStore.IsHs300AsOf(code, date) {
 			score += 5
 		}
 	}

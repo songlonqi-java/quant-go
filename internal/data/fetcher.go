@@ -115,6 +115,9 @@ func (f *Fetcher) FetchHistorical(ctx context.Context, startYear, endYear int, m
 	}
 	tradeDays := TradingDays(cal)
 	fmt.Printf(">>> 共 %d 个交易日\n", len(tradeDays))
+	if err := writeGenericParquet(filepath.Join(f.rawDir, "trade_cal.parquet"), cal); err != nil {
+		fmt.Printf("  警告: 保存交易日历失败: %v\n", err)
+	}
 
 	for year := startYear; year <= endYear; year++ {
 		fmt.Printf("\n>>> 拉取 %d 年数据 (%d只股票)...\n", year, len(stocks))

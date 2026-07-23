@@ -1,6 +1,9 @@
 package strategy
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 type Registry struct {
 	mu         sync.RWMutex
@@ -33,6 +36,7 @@ func (r *Registry) List() []string {
 	for _, s := range r.strategies {
 		names = append(names, s.Name())
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -66,6 +70,9 @@ func DefaultRegistry() *Registry {
 	r.Register(NewMASticky(2.0, 1.5))
 	r.Register(NewLimitUp(9.5, 1.2))
 	r.Register(NewBottomReversal(20, -15, 1.5, 100, 0.5))
+	r.Register(NewRelativeStrength(20, 60, 120, 10))
+	r.Register(NewATRBreakout(20, 14, 20, 6, 1.2))
+	r.Register(NewTrendPullback(2.5, 1.3))
 	return r
 }
 

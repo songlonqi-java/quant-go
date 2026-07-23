@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -48,15 +49,24 @@ func (c *Client) FetchDaily(ctx context.Context, tsCode, startDate, endDate stri
 	idx := indexMap(fieldList)
 	var bars []DailyBar
 	for _, item := range items {
+		open := getFloat(item, idx, "open")
+		high := getFloat(item, idx, "high")
+		low := getFloat(item, idx, "low")
+		close := getFloat(item, idx, "close")
 		bars = append(bars, DailyBar{
 			TsCode:    getStr(item, idx, "ts_code"),
 			TradeDate: getStr(item, idx, "trade_date"),
-			Open:      getFloat(item, idx, "open"),
-			High:      getFloat(item, idx, "high"),
-			Low:       getFloat(item, idx, "low"),
-			Close:     getFloat(item, idx, "close"),
+			Open:      open,
+			High:      high,
+			Low:       low,
+			Close:     close,
 			Vol:       getFloat(item, idx, "vol"),
 			Amount:    getFloat(item, idx, "amount"),
+			RawOpen:   open,
+			RawHigh:   high,
+			RawLow:    low,
+			RawClose:  close,
+			AdjFactor: 1,
 		})
 	}
 	return bars, nil
@@ -99,15 +109,24 @@ func (c *Client) FetchAllDailyByDate(ctx context.Context, tradeDate string) ([]D
 	idx := indexMap(fieldList)
 	var bars []DailyBar
 	for _, item := range items {
+		open := getFloat(item, idx, "open")
+		high := getFloat(item, idx, "high")
+		low := getFloat(item, idx, "low")
+		close := getFloat(item, idx, "close")
 		bars = append(bars, DailyBar{
 			TsCode:    getStr(item, idx, "ts_code"),
 			TradeDate: getStr(item, idx, "trade_date"),
-			Open:      getFloat(item, idx, "open"),
-			High:      getFloat(item, idx, "high"),
-			Low:       getFloat(item, idx, "low"),
-			Close:     getFloat(item, idx, "close"),
+			Open:      open,
+			High:      high,
+			Low:       low,
+			Close:     close,
 			Vol:       getFloat(item, idx, "vol"),
 			Amount:    getFloat(item, idx, "amount"),
+			RawOpen:   open,
+			RawHigh:   high,
+			RawLow:    low,
+			RawClose:  close,
+			AdjFactor: 1,
 		})
 	}
 	return bars, nil
@@ -138,16 +157,38 @@ func (c *Client) FetchAdjFactorsByDate(ctx context.Context, tradeDate string) ([
 func ApplyAdjFactors(bars []DailyBar, factors []AdjFactor) []DailyBar {
 	fm := make(map[string]float64)
 	for _, f := range factors {
-		fm[f.TsCode] = f.AdjFactor
+		fm[f.TsCode+"|"+f.TradeDate] = f.AdjFactor
 	}
 	result := make([]DailyBar, len(bars))
 	for i, b := range bars {
 		result[i] = b
-		if adj, ok := fm[b.TsCode]; ok && adj > 0 {
-			result[i].Open = b.Open * adj
-			result[i].High = b.High * adj
-			result[i].Low = b.Low * adj
-			result[i].Close = b.Close * adj
+		rawOpen := b.RawOpen
+		rawHigh := b.RawHigh
+		rawLow := b.RawLow
+		rawClose := b.RawClose
+		if rawOpen <= 0 {
+			rawOpen = b.Open
+		}
+		if rawHigh <= 0 {
+			rawHigh = b.High
+		}
+		if rawLow <= 0 {
+			rawLow = b.Low
+		}
+		if rawClose <= 0 {
+			rawClose = b.Close
+		}
+		result[i].RawOpen = rawOpen
+		result[i].RawHigh = rawHigh
+		result[i].RawLow = rawLow
+		result[i].RawClose = rawClose
+		result[i].AdjFactor = 1
+		if adj, ok := fm[b.TsCode+"|"+b.TradeDate]; ok && adj > 0 {
+			result[i].Open = rawOpen * adj
+			result[i].High = rawHigh * adj
+			result[i].Low = rawLow * adj
+			result[i].Close = rawClose * adj
+			result[i].AdjFactor = adj
 		}
 	}
 	return result
@@ -359,6 +400,7 @@ func TradingDays(calendars []TradeCal) []string {
 			days = append(days, c.CalDate)
 		}
 	}
+	sort.Strings(days)
 	return days
 }
 

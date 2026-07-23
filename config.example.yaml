@@ -26,4 +26,22 @@ signal:
     - ma_crossover
     - macd
     - rsi
+    - bollinger
+    - volume_breakout
+    - value_ma60
+    - etf_rotation
+    - dividend_deviation
+    - bull_flag
+    - kdj
+    - williams_r
+    - donchian
+    - mfi
+    - sar
+    - roc
+    - ma_sticky
+    - limit_up
+    - bottom_reversal
+    - relative_strength
+    - atr_breakout
+    - trend_pullback
   top_n: 20

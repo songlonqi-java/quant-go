@@ -22,18 +22,22 @@ func (l *LimitUp) Signal(bars []data.DailyBar, idx int) SignalType {
 		return Hold
 	}
 
-	prevChg := (bars[idx-1].Close/bars[idx-2].Close - 1) * 100
-	isLimitUp := prevChg >= l.LimitPct || (bars[idx-1].High-bars[idx-2].Close)/bars[idx-2].Close*100 >= l.LimitPct
+	prevClose2 := bars[idx-2].TradeClose()
+	prevClose := bars[idx-1].TradeClose()
+	if prevClose2 <= 0 {
+		return Hold
+	}
+	prevChg := (prevClose/prevClose2 - 1) * 100
+	isLimitUp := prevChg >= l.LimitPct || (bars[idx-1].TradeHigh()-prevClose2)/prevClose2*100 >= l.LimitPct
 
 	if isLimitUp {
-		curOpen := bars[idx].Open
-		prevClose := bars[idx-1].Close
-		prevHigh := bars[idx-1].High
+		curOpen := bars[idx].TradeOpen()
+		prevHigh := bars[idx-1].TradeHigh()
 		avgVol := avgVolume(bars, idx-2, 10)
 
 		isGapUp := curOpen > prevClose*1.005
 		isVolumeUp := avgVol > 0 && bars[idx].Vol > avgVol*l.VolumeRatio
-		isHoldingUp := bars[idx].Low > prevClose*0.98
+		isHoldingUp := bars[idx].TradeLow() > prevClose*0.98
 		isNotOpenLimit := curOpen < prevHigh*1.05
 
 		if isGapUp && isVolumeUp && isHoldingUp && isNotOpenLimit {
@@ -41,8 +45,8 @@ func (l *LimitUp) Signal(bars []data.DailyBar, idx int) SignalType {
 		}
 	}
 
-	prevDayChg := (bars[idx].Close/bars[idx-1].Close - 1) * 100
-	if prevDayChg < l.LimitPct*0.5 && bars[idx].Close < bars[idx-1].Close {
+	prevDayChg := (bars[idx].TradeClose()/prevClose - 1) * 100
+	if prevDayChg < l.LimitPct*0.5 && bars[idx].TradeClose() < prevClose {
 		return Sell
 	}
 
@@ -53,8 +57,12 @@ func (l *LimitUp) Score(bars []data.DailyBar, idx int) float64 {
 	if idx < l.Warmup() {
 		return 0
 	}
-	prevChg := (bars[idx-1].Close/bars[idx-2].Close - 1) * 100
-	curMomentum := (bars[idx].Close/bars[idx].Open - 1) * 100
+	prevClose2 := bars[idx-2].TradeClose()
+	if prevClose2 <= 0 || bars[idx].TradeOpen() <= 0 {
+		return 0
+	}
+	prevChg := (bars[idx-1].TradeClose()/prevClose2 - 1) * 100
+	curMomentum := (bars[idx].TradeClose()/bars[idx].TradeOpen() - 1) * 100
 	volBonus := 0.0
 	if avgVolume(bars, idx-2, 10) > 0 {
 		volBonus = bars[idx].Vol / avgVolume(bars, idx-2, 10)
