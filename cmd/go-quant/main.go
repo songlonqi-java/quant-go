@@ -12,6 +12,7 @@ import (
 	"quant/internal/data"
 	"quant/internal/market"
 	"quant/internal/news"
+	"quant/internal/portfolio"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 
@@ -333,6 +334,26 @@ func signalCmd() *cobra.Command {
 			sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
 			codeMap := data.GroupByCode(bars)
 
+			var latestDate string
+			for _, stockBars := range codeMap {
+				sort.Slice(stockBars, func(i, j int) bool { return stockBars[i].TradeDate < stockBars[j].TradeDate })
+				last := stockBars[len(stockBars)-1].TradeDate
+				if last > latestDate {
+					latestDate = last
+				}
+			}
+			filteredMap := make(map[string][]data.DailyBar)
+			skipped := 0
+			for code, stockBars := range codeMap {
+				if stockBars[len(stockBars)-1].TradeDate == latestDate {
+					filteredMap[code] = stockBars
+				} else {
+					skipped++
+				}
+			}
+			codeMap = filteredMap
+			fmt.Printf("最新交易日: %s, 有效股票: %d (跳过%d只过期股票)\n", latestDate, len(codeMap), skipped)
+
 			if topN == 0 {
 				topN = cfg.Signal.TopN
 			}
@@ -354,8 +375,14 @@ func signalCmd() *cobra.Command {
 				summary.Print()
 			}
 
-			results := signal.Generate(codeMap, selectedStrategies, topN*3,
-				data.LoadStockNames(cfg.Data.RawDir+"/stocks.parquet"))
+			stockNames := data.LoadStockNames(cfg.Data.RawDir + "/stocks.parquet")
+			pf, _ := portfolio.Load("portfolio.yaml")
+			if pf != nil {
+				statuses := portfolio.Analyze(pf, codeMap, stockNames)
+				portfolio.PrintStatus(statuses)
+			}
+
+			results := signal.Generate(codeMap, selectedStrategies, topN*3, stockNames)
 
 			if len(results) == 0 {
 				fmt.Println("今日无交易信号")
