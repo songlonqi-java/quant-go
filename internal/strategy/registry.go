@@ -57,6 +57,10 @@ func DefaultRegistry() *Registry {
 	r.Register(NewETFRotation(20, 5, 10, 2.0))
 	r.Register(NewDividendDeviation(600, 0.8, 1.2))
 	r.Register(NewBullFlag(10, 20, 0.5))
+	r.Register(NewKDJ(9, 20, 80))
+	r.Register(NewWilliamsR(14, -80, -20))
+	r.Register(NewDonchian(20))
+	r.Register(NewMFI(14, 20, 80))
 	return r
 }
 

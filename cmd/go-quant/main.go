@@ -6,11 +6,11 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"quant/internal/backtest"
 	"quant/internal/config"
 	"quant/internal/data"
+	"quant/internal/market"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 
@@ -58,6 +58,7 @@ func fetchCmd() *cobra.Command {
 		financials bool
 		hs300      bool
 		dailyBasic bool
+		indexData  bool
 		startYear  int
 		endYear    int
 		startDate  string
@@ -94,6 +95,10 @@ func fetchCmd() *cobra.Command {
 			if hs300 {
 				_, err := fetcher.FetchHs300(ctx)
 				return err
+			}
+
+			if indexData {
+				return fetcher.FetchIndexData(ctx, cfg.Fetch.StartYear, cfg.Fetch.EndYear)
 			}
 
 			if financials {
@@ -152,6 +157,7 @@ func fetchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&date, "date", "", "拉取指定日期 (YYYYMMDD)")
 	cmd.Flags().BoolVar(&financials, "financials", false, "拉取财务指标(ROE等) + 利润表")
 	cmd.Flags().BoolVar(&hs300, "hs300", false, "拉取沪深300成分股名单")
+	cmd.Flags().BoolVar(&indexData, "index", false, "拉取上证/深证/创业板指数数据")
 	cmd.Flags().BoolVar(&dailyBasic, "daily-basic", false, "拉取PE/PB/市值/股息率历史数据")
 	cmd.Flags().IntVar(&startYear, "start-year", 0, "起始年份")
 	cmd.Flags().IntVar(&endYear, "end-year", 0, "结束年份")
@@ -334,9 +340,14 @@ func signalCmd() *cobra.Command {
 
 			fmt.Printf("策略: %s\n", strings.Join(strategyNames, ", "))
 			fmt.Printf("股票数: %d, 数据量: %d\n", len(codeMap), len(bars))
-			fmt.Printf("分析日期: %s\n", time.Now().Format("2006-01-02"))
 
-			results := signal.Generate(codeMap, selectedStrategies, topN*3)
+			marketStatus := market.Analyze(bars)
+			if marketStatus != nil {
+				marketStatus.Print()
+			}
+
+			results := signal.Generate(codeMap, selectedStrategies, topN*3,
+				data.LoadStockNames(cfg.Data.RawDir+"/stocks.parquet"))
 
 			if len(results) == 0 {
 				fmt.Println("今日无交易信号")

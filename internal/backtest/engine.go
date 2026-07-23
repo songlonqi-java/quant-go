@@ -55,11 +55,11 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) int,
 
 		if !holding && sig == 1 {
 			execPrice := closePrice * (1 + cfg.Slippage)
-			cost := cfg.InitialCapital * cfg.Commission
-			available := cash - cost
+			available := cash
 			if available > 0 && execPrice > 0 {
 				shares = available / execPrice
-				cash = cash - available - cost
+				cost := shares * execPrice * cfg.Commission
+				cash = cash - shares*execPrice - cost
 				holding = true
 				tradeCount++
 				trades = append(trades, Trade{

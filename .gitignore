@@ -1,4 +1,5 @@
 # Local configuration and secrets
+config.yaml
 .env
 .env.*
 *.local

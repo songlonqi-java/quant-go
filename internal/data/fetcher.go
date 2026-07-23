@@ -482,6 +482,39 @@ func (f *Fetcher) FetchHs300(ctx context.Context) ([]HsConst, error) {
 	return all, nil
 }
 
+func (f *Fetcher) FetchIndexData(ctx context.Context, startYear, endYear int) error {
+	indices := []struct {
+		code string
+		name string
+	}{
+		{"000001.SH", "上证指数"},
+		{"399001.SZ", "深证成指"},
+		{"399006.SZ", "创业板指"},
+	}
+	startDate := fmt.Sprintf("%d0101", startYear)
+	endDate := fmt.Sprintf("%d1231", endYear)
+
+	for _, idx := range indices {
+		fmt.Printf(">>> 拉取 %s (%s)...\n", idx.name, idx.code)
+		bars, err := f.client.FetchIndexDaily(ctx, idx.code, startDate, endDate)
+		if err != nil {
+			return fmt.Errorf("拉取 %s 失败: %w", idx.name, err)
+		}
+		if len(bars) == 0 {
+			fmt.Printf("  无数据\n")
+			continue
+		}
+		outFile := filepath.Join(f.rawDir, "index", fmt.Sprintf("%s.parquet", idx.code))
+		if err := writeGenericParquet(outFile, bars); err != nil {
+			return err
+		}
+		fmt.Printf("  %s 完成: %d 条 → %s\n", idx.name, len(bars), outFile)
+	}
+
+	f.client.LogStatus()
+	return nil
+}
+
 func (f *Fetcher) LoadDailyBasicStore() (*FundamentalStore, error) {
 	store := NewFundamentalStore()
 	dir := filepath.Join(f.rawDir, "daily_basic")

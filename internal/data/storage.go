@@ -3,6 +3,7 @@ package data
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,15 +44,18 @@ func ReadParquetFile(filepath string) ([]DailyBar, error) {
 
 	var bars []DailyBar
 	reader := parquet.NewReader(file, parquet.SchemaOf(&DailyBar{}))
+	defer reader.Close()
 	for {
 		var bar DailyBar
 		err := reader.Read(&bar)
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return bars, fmt.Errorf("parquet读取错误 %s: %w", filepath, err)
 		}
 		bars = append(bars, bar)
 	}
-	reader.Close()
 	return bars, nil
 }
 
@@ -176,6 +180,29 @@ func GroupByCode(bars []DailyBar) map[string][]DailyBar {
 	return m
 }
 
+func LoadStockNames(path string) map[string]string {
+	names := make(map[string]string)
+	f, err := os.Open(path)
+	if err != nil {
+		return names
+	}
+	defer f.Close()
+
+	reader := parquet.NewReader(f, parquet.SchemaOf(&StockInfo{}))
+	defer reader.Close()
+
+	for {
+		var s StockInfo
+		if err := reader.Read(&s); err != nil {
+			break
+		}
+		if s.Name != "" {
+			names[s.TsCode] = s.Name
+		}
+	}
+	return names
+}
+
 func readGenericParquet[T any](filePath string) ([]T, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -191,8 +218,11 @@ func readGenericParquet[T any](filePath string) ([]T, error) {
 	for {
 		var item T
 		err := reader.Read(&item)
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return result, fmt.Errorf("parquet读取错误 %s: %w", filePath, err)
 		}
 		result = append(result, item)
 	}

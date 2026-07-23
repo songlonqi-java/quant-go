@@ -72,8 +72,13 @@ var defaultConfig = Config{
 		RiskFreeRate:   0.03,
 	},
 	Signal: SignalConfig{
-		DefaultStrategies: []string{"ma_crossover", "macd", "rsi"},
-		TopN:              20,
+		DefaultStrategies: []string{
+			"ma_crossover", "macd", "rsi", "bollinger",
+			"volume_breakout", "value_ma60", "etf_rotation",
+			"dividend_deviation", "bull_flag",
+			"kdj", "williams_r", "donchian", "mfi",
+		},
+		TopN: 20,
 	},
 }
 

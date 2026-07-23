@@ -25,7 +25,7 @@ type SignalDetail struct {
 	Score  float64
 }
 
-func Generate(barsMap map[string][]data.DailyBar, strategies []strategy.Strategy, topN int) []SignalResult {
+func Generate(barsMap map[string][]data.DailyBar, strategies []strategy.Strategy, topN int, names map[string]string) []SignalResult {
 	var results []SignalResult
 
 	for code, bars := range barsMap {
@@ -34,9 +34,14 @@ func Generate(barsMap map[string][]data.DailyBar, strategies []strategy.Strategy
 		}
 		lastIdx := len(bars) - 1
 
+		name := code
+		if n, ok := names[code]; ok && n != "" {
+			name = n
+		}
+
 		r := SignalResult{
 			Code:       code,
-			Name:       code,
+			Name:       name,
 			Date:       bars[lastIdx].TradeDate,
 			Close:      bars[lastIdx].Close,
 			Strategies: make(map[string]SignalDetail),

@@ -145,27 +145,49 @@ func (fs *FundamentalStore) MergeFrom(other *FundamentalStore) {
 	if other == nil {
 		return
 	}
-	other.mu.RLock()
-	defer other.mu.RUnlock()
 
+	other.mu.RLock()
+	dailyBasicsCopy := make(map[string]map[string]*DailyBasic)
 	for code, dateMap := range other.dailyBasics {
+		m := make(map[string]*DailyBasic)
 		for date, b := range dateMap {
-			if fs.dailyBasics[code] == nil {
-				fs.dailyBasics[code] = make(map[string]*DailyBasic)
-			}
+			cp := *b
+			m[date] = &cp
+		}
+		dailyBasicsCopy[code] = m
+	}
+
+	var allFina []FinaIndicator
+	for _, list := range other.finaIndicators {
+		allFina = append(allFina, list...)
+	}
+
+	hsCopy := make(map[string]bool)
+	for code := range other.hs300Set {
+		hsCopy[code] = true
+	}
+	loaded := other.loaded
+	other.mu.RUnlock()
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	for code, dateMap := range dailyBasicsCopy {
+		if fs.dailyBasics[code] == nil {
+			fs.dailyBasics[code] = make(map[string]*DailyBasic)
+		}
+		for date, b := range dateMap {
 			fs.dailyBasics[code][date] = b
 		}
 	}
 
-	for _, list := range other.finaIndicators {
-		fs.LoadFinaIndicators(list)
+	for _, fi := range allFina {
+		fs.finaIndicators[fi.TsCode] = append(fs.finaIndicators[fi.TsCode], fi)
 	}
-
-	for code := range other.hs300Set {
+	for code := range hsCopy {
 		fs.hs300Set[code] = true
 	}
-
-	if other.loaded {
+	if loaded {
 		fs.loaded = true
 	}
 }

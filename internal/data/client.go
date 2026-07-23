@@ -17,11 +17,10 @@ type Client struct {
 	RateLimitMs    int
 	DailyCallLimit int
 	HTTPClient     *http.Client
-	lastCall       time.Time
 	mu             sync.Mutex
 	callCount      int
 	callDate       string
-	callPaused     bool
+	lastCall       time.Time
 }
 
 func NewClient(baseURL, token string, rateLimitMs int) *Client {
@@ -55,6 +54,23 @@ func (c *Client) ResetCallCount() {
 	c.callDate = time.Now().Format("20060102")
 }
 
+func (c *Client) checkDailyLimit() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.DailyCallLimit <= 0 {
+		return nil
+	}
+	today := time.Now().Format("20060102")
+	if c.callDate != today {
+		c.callCount = 0
+		c.callDate = today
+	}
+	if c.callCount >= c.DailyCallLimit {
+		return fmt.Errorf("已达每日调用上限 %d 次，请明天再试或提高 daily_call_limit", c.DailyCallLimit)
+	}
+	return nil
+}
+
 func (c *Client) trackCall() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -64,29 +80,26 @@ func (c *Client) trackCall() {
 		c.callDate = today
 	}
 	c.callCount++
+	c.lastCall = time.Now()
 }
 
 func (c *Client) rateLimit() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	elapsed := time.Since(c.lastCall)
 	minGap := time.Duration(c.RateLimitMs) * time.Millisecond
 	if elapsed < minGap {
+		c.mu.Unlock()
 		time.Sleep(minGap - elapsed)
+		c.mu.Lock()
 	}
 	c.lastCall = time.Now()
 }
 
 func (c *Client) Call(ctx context.Context, apiName string, params map[string]interface{}, fields string, maxRetries int) ([]string, [][]interface{}, error) {
-	c.mu.Lock()
-	if c.DailyCallLimit > 0 && c.callCount >= c.DailyCallLimit {
-		c.mu.Unlock()
-		today := time.Now().Format("20060102")
-		c.mu.Lock()
-		if c.callDate == today {
-			c.mu.Unlock()
-			return nil, nil, fmt.Errorf("已达每日调用上限 %d 次，请明天再试或提高 daily_call_limit", c.DailyCallLimit)
-		}
+	if err := c.checkDailyLimit(); err != nil {
+		return nil, nil, err
 	}
-	c.mu.Unlock()
 
 	reqBody := TushareReq{
 		APIName: apiName,
@@ -107,7 +120,17 @@ func (c *Client) Call(ctx context.Context, apiName string, params map[string]int
 			if backoff > 30*time.Second {
 				backoff = 30 * time.Second
 			}
-			time.Sleep(backoff)
+			select {
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		default:
 		}
 
 		c.rateLimit()
@@ -140,7 +163,11 @@ func (c *Client) Call(ctx context.Context, apiName string, params map[string]int
 		if result.Code != 0 {
 			lastErr = fmt.Errorf("Tushare错误 [%d]: %s", result.Code, result.Msg)
 			if result.Code == -2001 || result.Code == 2001 {
-				time.Sleep(5 * time.Second)
+				select {
+				case <-ctx.Done():
+					return nil, nil, ctx.Err()
+				case <-time.After(5 * time.Second):
+				}
 			}
 			continue
 		}
@@ -153,7 +180,7 @@ func (c *Client) Call(ctx context.Context, apiName string, params map[string]int
 }
 
 func (c *Client) CallOnce(ctx context.Context, apiName string, params map[string]interface{}, fields string) ([]string, [][]interface{}, error) {
-	return c.Call(ctx, apiName, params, fields, 0)
+	return c.Call(ctx, apiName, params, fields, 2)
 }
 
 func (c *Client) CallPaginated(ctx context.Context, apiName string, params map[string]interface{}, fields string, pageSize int) ([]string, [][]interface{}, error) {

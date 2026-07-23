@@ -8,7 +8,7 @@ import (
 )
 
 func (c *Client) FetchStockList(ctx context.Context) ([]StockInfo, error) {
-	fields := "ts_code,symbol,name,market,list_date,delist_date"
+	fields := "ts_code,symbol,name,market,industry,list_date,delist_date"
 	params := map[string]interface{}{
 		"list_status": "L",
 	}
@@ -25,6 +25,7 @@ func (c *Client) FetchStockList(ctx context.Context) ([]StockInfo, error) {
 			Symbol:     getStr(item, idx, "symbol"),
 			Name:       getStr(item, idx, "name"),
 			Market:     getStr(item, idx, "market"),
+			Industry:   getStr(item, idx, "industry"),
 			ListDate:   getStr(item, idx, "list_date"),
 			DelistDate: getStr(item, idx, "delist_date"),
 		})
@@ -156,9 +157,21 @@ func FilterStocksByPrefix(stocks []StockInfo, prefixes []string) []StockInfo {
 	if len(prefixes) == 0 {
 		return stocks
 	}
+
+	sorted := make([]string, len(prefixes))
+	copy(sorted, prefixes)
+
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if len(sorted[i]) < len(sorted[j]) {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+
 	var result []StockInfo
 	for _, s := range stocks {
-		for _, p := range prefixes {
+		for _, p := range sorted {
 			if strings.HasPrefix(s.TsCode, p) {
 				result = append(result, s)
 				break
@@ -347,6 +360,34 @@ func TradingDays(calendars []TradeCal) []string {
 		}
 	}
 	return days
+}
+
+func (c *Client) FetchIndexDaily(ctx context.Context, tsCode, startDate, endDate string) ([]IndexBar, error) {
+	fields := "ts_code,trade_date,close,open,high,low,vol,amount"
+	params := map[string]interface{}{
+		"ts_code":    tsCode,
+		"start_date": startDate,
+		"end_date":   endDate,
+	}
+	fieldList, items, err := c.CallOnce(ctx, "index_daily", params, fields)
+	if err != nil {
+		return nil, err
+	}
+	idx := indexMap(fieldList)
+	var result []IndexBar
+	for _, item := range items {
+		result = append(result, IndexBar{
+			TsCode:    getStr(item, idx, "ts_code"),
+			TradeDate: getStr(item, idx, "trade_date"),
+			Close:     getFloat(item, idx, "close"),
+			Open:      getFloat(item, idx, "open"),
+			High:      getFloat(item, idx, "high"),
+			Low:       getFloat(item, idx, "low"),
+			Vol:       getFloat(item, idx, "vol"),
+			Amount:    getFloat(item, idx, "amount"),
+		})
+	}
+	return result, nil
 }
 
 func indexMap(fields []string) map[string]int {

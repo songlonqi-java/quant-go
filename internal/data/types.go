@@ -16,6 +16,7 @@ type StockInfo struct {
 	Symbol     string `parquet:"symbol"`
 	Name       string `parquet:"name"`
 	Market     string `parquet:"market"`
+	Industry   string `parquet:"industry"`
 	ListDate   string `parquet:"list_date"`
 	DelistDate string `parquet:"delist_date"`
 }
@@ -92,10 +93,21 @@ type HsConst struct {
 }
 
 type TradeCal struct {
-	Exchange   string `parquet:"exchange"`
-	CalDate    string `parquet:"cal_date"`
-	IsOpen     int    `parquet:"is_open"`
+	Exchange     string `parquet:"exchange"`
+	CalDate      string `parquet:"cal_date"`
+	IsOpen       int    `parquet:"is_open"`
 	PretradeDate string `parquet:"pretrade_date"`
+}
+
+type IndexBar struct {
+	TsCode    string  `parquet:"ts_code"`
+	TradeDate string  `parquet:"trade_date"`
+	Close     float64 `parquet:"close"`
+	Open      float64 `parquet:"open"`
+	High      float64 `parquet:"high"`
+	Low       float64 `parquet:"low"`
+	Vol       float64 `parquet:"vol"`
+	Amount    float64 `parquet:"amount"`
 }
 
 func (b DailyBar) AdjustedPrice() float64 {
