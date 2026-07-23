@@ -88,8 +88,19 @@ func (b *BottomReversal) Signal(bars []data.DailyBar, idx int) SignalType {
 		return Buy
 	}
 
-	// 卖出: 持有2-3天自动卖, 或跌破买入价的3%
-	// (这个由回测引擎的持有天数逻辑处理, 这里只给信号)
+	// 卖出1: 收盘低于前日最低 (超短止损)
+	if cur.Close < prev.Low {
+		return Sell
+	}
+	// 卖出2: 跌破MA5 (反弹趋势走弱)
+	if idx >= 5 {
+		ma5 := sma(bars, idx, 5)
+		prevMA5 := sma(bars, idx-1, 5)
+		if ma5 > 0 && prevMA5 > 0 && cur.Close < ma5 && prev.Close >= prevMA5 {
+			return Sell
+		}
+	}
+
 	return Hold
 }
 
