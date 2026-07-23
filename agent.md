@@ -182,32 +182,41 @@ go build -o go-quant ./cmd/go-quant/
 
 ---
 
-## 全部策略详解
+## 全部策略详解（共 17 个）
 
-### 策略 1-5：技术指标经典策略
+### 短线策略（11 个，预热期 ≤21 天）
 
 | 命令名 | 预热期 | 类型 | 买入信号 | 卖出信号 |
 |--------|--------|------|----------|----------|
-| `ma_crossover` | 20 天 | 趋势跟踪 | MA5 ↑ 上穿 MA20 ↑ | MA5 ↓ 下穿 MA20 ↓ |
-| `macd` | 35 天 | 趋势跟踪 | MACD 柱由负转正（穿零轴） | 柱由正转负 |
-| `rsi` | 15 天 | 均值回归 | RSI 从超卖区(<30)回升 | RSI 从超买区(>70)回落 |
-| `bollinger` | 20 天 | 均值回归 | 价格从下轨下方反弹突破 | 价格从上轨上方回落跌破 |
-| `volume_breakout` | 21 天 | 量价共振 | 放量(>1.5x均值)上涨突破 MA20 | 放量下跌 |
+| `limit_up` | 2 天 | 涨停板追涨 | 涨停次日放量高开不破 | 次日不涨停 |
+| `sar` | 5 天 | 抛物线止损 | SAR 从上方翻到下方 | SAR 从下方翻到上方 |
+| `kdj` | 10 天 | 随机指标 | K↑穿D↑且<20（超卖金叉） | K↓穿D↓且>80（超买死叉） |
+| `roc` | 12 天 | 动量突破 | 12日涨>5%且当日收阳 | 12日跌>5%且当日收阴 |
+| `williams_r` | 14 天 | 威廉指标 | %R上穿-80（超卖回升） | %R下穿-20（超买回落） |
+| `rsi` | 15 天 | 相对强弱 | RSI从超卖区(<30)回升 | RSI从超买区(>70)回落 |
+| `mfi` | 15 天 | 资金流向 | 成交量加权RSI从20回升 | 成交量加权RSI从80回落 |
+| `bull_flag` | 20 天 | 龙头回踩 | 缩量(<峰值50%)回踩MA10不破 | 跌破MA10或收盘<前日最低 |
+| `bollinger` | 20 天 | 布林带 | 价格从下轨下方反弹突破 | 价格从上轨上方回落跌破 |
+| `donchian` | 20 天 | 通道突破 | 价格突破N日最高价 | 价格跌破N日最低价 |
+| `volume_breakout` | 21 天 | 放量突破 | 放量(>1.5x)上涨突破MA20 | 放量下跌 |
 
-### 策略 6-9：文档定制策略（来自 text.md）
+### 中线策略（5 个，预热期 20-60 天）
 
-| 命令名 | 预热期 | 对应文档 | 买入信号 | 卖出信号 |
-|--------|--------|----------|----------|----------|
-| `value_ma60` | 60 天 | 策略1 价值回归+均线 | 股价上穿 MA60（站上生命线） | 触及布林上轨 或 跌破 MA60 |
-| `etf_rotation` | 20 天 | 策略2 ETF 双轮驱动 | 20日动量>2% 且 MA5 金叉 MA10 | MA5 死叉 MA10 |
-| `dividend_deviation` | 600 天 | 策略3 高股息偏离度 | 价格<3年均价×0.8 且收阳线 | 价格>3年均价×1.2 且长上影线 |
-| `bull_flag` | 20 天 | 策略4 龙头回踩 | 缩量(<峰值50%)回踩 MA10 不破 | 跌破 MA10 或 收盘<前日最低 |
+| 命令名 | 预热期 | 类型 | 买入信号 | 卖出信号 |
+|--------|--------|------|----------|----------|
+| `ma_crossover` | 20 天 | 双均线 | MA5↑上穿MA20↑ | MA5↓下穿MA20↓ |
+| `etf_rotation` | 20 天 | 动量轮动 | 20日动量>2%且MA5金叉MA10 | MA5死叉MA10 |
+| `macd` | 35 天 | MACD | MACD柱由负转正 | 柱由正转负 |
+| `ma_sticky` | 60 天 | 均线粘合 | 四均线收敛(<2%)+放量突破 | 均线发散向下 |
+| `value_ma60` | 60 天 | 价值+均线 | 股价上穿MA60（+沪深300+ROE≥15%过滤） | 触及布林上轨或跌破MA60 |
 
-**关于基本面数据：**
-- `value_ma60` 和 `dividend_deviation` 文档版需要 PE 分位、ROE、股息率等基本面数据
-- 当前实现已完成技术信号部分（MA60 交叉、价格偏离度、布林带）
-- 基本面筛选（PE 分位 < 30%、ROE > 15%）可后续接入 Tushare `daily_basic` 和 `fina_indicator` API 增强
-- 相关 API 方法已预留：`FetchDailyBasic()`、`FetchDailyBasicByDate()`
+### 长线策略（1 个）
+
+| 命令名 | 预热期 | 类型 | 买入信号 | 卖出信号 |
+|--------|--------|------|----------|----------|
+| `dividend_deviation` | 600 天 | 高股息偏离 | 价格<3年均价×0.8且收阳线 | 价格>3年均价×1.2且长上影线 |
+
+> 基本面增强：`value_ma60`、`dividend_deviation`、`etf_rotation`、`bull_flag` 四个策略实现了 `FundStoreUser` 接口，本地基本面数据（PE/PB/ROE/市值/股息率）加载后自动注入，无需额外配置。
 
 ---
 
@@ -238,10 +247,24 @@ backtest:
   risk_free_rate: 0.03   # 3%
 
 signal:
-  default_strategies:    # signal 命令默认使用的策略
+  default_strategies:
     - ma_crossover
     - macd
     - rsi
+    - bollinger
+    - volume_breakout
+    - value_ma60
+    - etf_rotation
+    - dividend_deviation
+    - bull_flag
+    - kdj
+    - williams_r
+    - donchian
+    - mfi
+    - sar
+    - roc
+    - ma_sticky
+    - limit_up
   top_n: 20
 ```
 
@@ -264,18 +287,15 @@ signal:
 
 ```bash
 # ===== 上午/中午 =====
-# 不需要拉数据，直接分析（基于昨日收盘数据）
-./go-quant signal -s value_ma60,bull_flag -n 20
+# 直接分析（基于昨日收盘数据 + 免费新浪新闻）
+./go-quant signal -n 20
 
 # ===== 收盘后（~15:30） =====
 # 1. 拉取今日收盘数据
 ./go-quant fetch --today
 
-# 2. 如果需要补拉当日 PE/PB（可选，用于基本面策略）
-#    (需要先实现 daily_basic 数据的拉取管道)
-
-# 3. 更新信号（基于今日最新数据）
-./go-quant signal -s value_ma60,bull_flag -n 20 -f table
+# 2. 更新信号（基于今日最新数据）
+./go-quant signal -n 20
 
 # 4. 回测检查策略表现（可选，周末/月末做）
 ./go-quant backtest -s value_ma60 --start 20250101
