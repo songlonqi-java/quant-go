@@ -64,11 +64,18 @@ func (b *BottomReversal) Signal(bars []data.DailyBar, idx int) SignalType {
 	isVolumeUp := avgVol > 0 && cur.Vol > avgVol*b.VolumeRatio
 	isPriceUp := cur.Close > prev.Close
 
-	// 3. 不是连续暴跌 (今日振幅不宜过大, 不能是跌停拉起的假反弹)
+	// 3. 不是连续暴跌
 	dayRange := (cur.High - cur.Low) / cur.Low * 100
 	isStableRange := dayRange < 15
 
-	if isOversold && isVolumeUp && isPriceUp && isStableRange {
+	// 4. 趋势确认: MA5已拐头向上 且 价格站上MA20
+	ma5 := sma(bars, idx, 5)
+	prevMA5 := sma(bars, idx-1, 5)
+	ma10 := sma(bars, idx, 10)
+	ma20 := sma(bars, idx, 20)
+	trendTurning := ma5 > 0 && ma10 > 0 && ma20 > 0 && ma5 > prevMA5 && cur.Close > ma20
+
+	if isOversold && isVolumeUp && isPriceUp && isStableRange && trendTurning {
 		// 质量过滤: 有基本面数据时, 检查PE和市值
 		if b.fundStore != nil {
 			code := bars[idx].TsCode
