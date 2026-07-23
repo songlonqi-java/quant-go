@@ -65,6 +65,7 @@ func DefaultRegistry() *Registry {
 	r.Register(NewROC(12, 5, -5))
 	r.Register(NewMASticky(2.0, 1.5))
 	r.Register(NewLimitUp(9.5, 1.2))
+	r.Register(NewBottomReversal(20, -15, 2.0, 100, 0.5))
 	return r
 }
 
