@@ -39,4 +39,4 @@ coverage.out
 .DS_Store
 .idea/
 .vscode/
-portfolio.yaml
+portfolio.yaml*.tar.gz

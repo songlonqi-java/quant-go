@@ -140,6 +140,8 @@ func (f *Fetcher) FetchHistorical(ctx context.Context, startYear, endYear int, m
 			factors, err := f.client.FetchAdjFactorsByDate(ctx, day)
 			if err == nil && len(factors) > 0 {
 				bars = ApplyAdjFactors(bars, factors)
+			} else {
+				fmt.Printf("  ⚠ %s 复权因子缺失(数据未复权!)\n", day)
 			}
 
 			if len(codeSet) > 0 {
@@ -202,6 +204,8 @@ func (f *Fetcher) FetchToday(ctx context.Context, force bool) ([]DailyBar, error
 	factors, err := f.client.FetchAdjFactorsByDate(ctx, today)
 	if err == nil && len(factors) > 0 {
 		bars = ApplyAdjFactors(bars, factors)
+	} else {
+		fmt.Printf("  ⚠ 复权因子缺失(数据未复权!)\n")
 	}
 
 	var filtered []DailyBar
@@ -248,6 +252,8 @@ func (f *Fetcher) FetchDate(ctx context.Context, date string, force bool) ([]Dai
 	factors, err := f.client.FetchAdjFactorsByDate(ctx, date)
 	if err == nil && len(factors) > 0 {
 		bars = ApplyAdjFactors(bars, factors)
+	} else {
+		fmt.Printf("  ⚠ 复权因子缺失(数据未复权!)\n")
 	}
 
 	var filtered []DailyBar
