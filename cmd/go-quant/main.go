@@ -376,10 +376,10 @@ func signalCmd() *cobra.Command {
 			}
 
 			stockNames := data.LoadStockNames(cfg.Data.RawDir + "/stocks.parquet")
-			pf, _ := portfolio.Load("portfolio.yaml")
-			if pf != nil {
-				statuses := portfolio.Analyze(pf, codeMap, stockNames)
-				portfolio.PrintStatus(statuses)
+			ledger, _ := portfolio.Load("portfolio.yaml")
+			if ledger != nil {
+				summary := portfolio.Analyze(ledger, codeMap, stockNames)
+				portfolio.PrintSummary(summary)
 			}
 
 			results := signal.Generate(codeMap, selectedStrategies, topN*3, stockNames)
