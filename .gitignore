@@ -11,6 +11,9 @@ config.yaml
 *.sqlite3
 *.parquet
 
+# Reports
+reports/
+
 # Logs and temporary files
 *.log
 tmp/

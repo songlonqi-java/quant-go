@@ -380,6 +380,7 @@ func signalCmd() *cobra.Command {
 			if ledger != nil {
 				summary := portfolio.Analyze(ledger, codeMap, stockNames)
 				portfolio.PrintSummary(summary)
+				portfolio.SaveReport(summary, cfg.Data.RawDir+"/reports")
 			}
 
 			results := signal.Generate(codeMap, selectedStrategies, topN*3, stockNames)

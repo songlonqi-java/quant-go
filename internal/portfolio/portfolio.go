@@ -1,10 +1,12 @@
 package portfolio
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"quant/internal/data"
 
@@ -284,4 +286,65 @@ func pnlBar(pct float64) string {
 		return strings.Repeat("█", n)
 	}
 	return strings.Repeat("░", n)
+}
+
+type ReportData struct {
+	GeneratedAt  string           `json:"generated_at"`
+	Holdings     []PositionStatus `json:"holdings"`
+	ClosedTrades []ClosedTrade    `json:"closed_trades"`
+	TotalRealized float64        `json:"total_realized"`
+	WinRate      float64         `json:"win_rate"`
+	TotalTrades  int             `json:"total_trades"`
+}
+
+func SaveReport(s *Summary, path string) error {
+	if s == nil {
+		return nil
+	}
+	os.MkdirAll(path, 0755)
+
+	r := ReportData{
+		GeneratedAt:  time.Now().Format("2006-01-02 15:04:05"),
+		Holdings:     s.Holdings,
+		ClosedTrades: s.ClosedTrades,
+		TotalRealized: s.TotalRealized,
+		WinRate:      s.WinRate,
+		TotalTrades:  s.WinCount + s.LossCount,
+	}
+
+	// JSON: 完整数据
+	jsonPath := path + "/portfolio_summary.json"
+	data, _ := json.MarshalIndent(r, "", "  ")
+	os.WriteFile(jsonPath, data, 0644)
+
+	// CSV: 已平仓交易(方便表格统计)
+	csvPath := path + "/closed_trades.csv"
+	f, err := os.Create(csvPath)
+	if err == nil {
+		defer f.Close()
+		f.WriteString("代码,名称,买入日,卖出日,股数,买入价,卖出价,收益率%,盈亏\n")
+		for _, t := range s.ClosedTrades {
+			name := t.Code
+			if t.Name != "" {
+				name = t.Name
+			}
+			f.WriteString(fmt.Sprintf("%s,%s,%s,%s,%.0f,%.2f,%.2f,%.1f,%.0f\n",
+				t.Code, name, t.BuyDate, t.SellDate, t.Shares, t.BuyPrice, t.SellPrice, t.Return, t.PnL))
+		}
+	}
+
+	// CSV: 当前持仓
+	holdPath := path + "/current_holdings.csv"
+	hf, err := os.Create(holdPath)
+	if err == nil {
+		defer hf.Close()
+		hf.WriteString("代码,名称,股数,成本价,现价,市值,浮动盈亏%,浮动盈亏\n")
+		for _, h := range s.Holdings {
+			hf.WriteString(fmt.Sprintf("%s,%s,%.0f,%.2f,%.2f,%.0f,%.1f,%.0f\n",
+				h.Code, h.Name, h.Shares, h.Cost, h.LastPrice, h.MarketVal, h.PnLPct, h.PnL))
+		}
+	}
+
+	fmt.Printf(">>> 报表已保存: %s/*.json, *.csv\n", path)
+	return nil
 }
