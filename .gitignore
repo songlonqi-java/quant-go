@@ -11,8 +11,8 @@ config.yaml
 *.sqlite3
 *.parquet
 
-# Reports
-reports/
+# Portfolio (personal holdings)
+portfolio.yaml
 
 # Logs and temporary files
 *.log
