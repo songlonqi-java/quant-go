@@ -61,6 +61,10 @@ func DefaultRegistry() *Registry {
 	r.Register(NewWilliamsR(14, -80, -20))
 	r.Register(NewDonchian(20))
 	r.Register(NewMFI(14, 20, 80))
+	r.Register(NewParabolicSAR(0.02, 0.2))
+	r.Register(NewROC(12, 5, -5))
+	r.Register(NewMASticky(2.0, 1.5))
+	r.Register(NewLimitUp(9.5, 1.2))
 	return r
 }
 

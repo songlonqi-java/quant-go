@@ -77,6 +77,7 @@ var defaultConfig = Config{
 			"volume_breakout", "value_ma60", "etf_rotation",
 			"dividend_deviation", "bull_flag",
 			"kdj", "williams_r", "donchian", "mfi",
+			"sar", "roc", "ma_sticky", "limit_up",
 		},
 		TopN: 20,
 	},
