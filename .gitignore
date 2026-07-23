@@ -14,6 +14,16 @@ config.yaml
 # Portfolio (personal holdings)
 portfolio.yaml
 
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Go build outputs
+/go-quant
+*.test
+coverage.out
+
 # Logs and temporary files
 *.log
 tmp/
