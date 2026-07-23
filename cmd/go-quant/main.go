@@ -319,16 +319,6 @@ func signalCmd() *cobra.Command {
 				return fmt.Errorf("没有可用的策略")
 			}
 
-			fetcher := data.NewFetcher(nil, cfg.Data.RawDir, nil)
-			fundStore := loadFundStore(fetcher)
-			if fundStore != nil {
-				for _, s := range selectedStrategies {
-					if u, ok := s.(strategy.FundStoreUser); ok {
-						u.SetFundStore(fundStore)
-					}
-				}
-			}
-
 			bars, err := data.ReadParquetDir(cfg.Data.RawDir + "/daily")
 			if err != nil {
 				return fmt.Errorf("加载数据失败: %w", err)
@@ -367,6 +357,29 @@ func signalCmd() *cobra.Command {
 			}
 			if stFiltered > 0 {
 				fmt.Printf("过滤ST股: %d只, 剩余: %d只\n", stFiltered, len(codeMap))
+			}
+
+			fetcher := data.NewFetcher(nil, cfg.Data.RawDir, nil)
+			fundStore := loadFundStore(fetcher)
+			if fundStore != nil {
+				if cfg.Fetch.MinMarketCap > 0 {
+					noBasicFiltered := 0
+					for code := range codeMap {
+						_, _, hasBasic := fundStore.GetLatestPE(code)
+						if !hasBasic {
+							delete(codeMap, code)
+							noBasicFiltered++
+						}
+					}
+					if noBasicFiltered > 0 {
+						fmt.Printf("过滤无基本面数据(小盘股): %d只, 剩余: %d只\n", noBasicFiltered, len(codeMap))
+					}
+				}
+				for _, s := range selectedStrategies {
+					if u, ok := s.(strategy.FundStoreUser); ok {
+						u.SetFundStore(fundStore)
+					}
+				}
 			}
 
 			if topN == 0 {
