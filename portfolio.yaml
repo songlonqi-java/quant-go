@@ -1,21 +1,7 @@
 # 我的持仓 - 每次运行信号分析时自动加载
-# 格式说明:
-#   code   : 股票代码 (如 600438.SH)
-#   name   : 股票名称 (可选, 不填自动从股票列表查找)
-#   shares : 持股数量 (股)
-#   cost   : 成本价 (元)
-#   date   : 买入日期 (YYYYMMDD, 可选)
-#
-# 示例:
-# holdings:
-#   - code: "600438.SH"
-#     name: "通威股份"
-#     shares: 1000
-#     cost: 138.50
-#     date: "20260715"
-#   - code: "002415.SZ"
-#     shares: 500
-#     cost: 850.00
-#     date: "20260601"
+# 总资产: 70,008.42
 
-holdings: []
+holdings:
+  - code: "600489.SH"
+    shares: 100
+    cost: 22.501
