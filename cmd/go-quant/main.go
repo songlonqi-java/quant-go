@@ -357,6 +357,18 @@ func signalCmd() *cobra.Command {
 			codeMap = filteredMap
 			fmt.Printf("最新交易日: %s, 有效股票: %d (跳过%d只过期股票)\n", latestDate, len(codeMap), skipped)
 
+			stockNames := data.LoadStockNames(cfg.Data.RawDir + "/stocks.parquet")
+			stFiltered := 0
+			for code, name := range stockNames {
+				if strings.Contains(name, "ST") || strings.Contains(name, "*ST") {
+					delete(codeMap, code)
+					stFiltered++
+				}
+			}
+			if stFiltered > 0 {
+				fmt.Printf("过滤ST股: %d只, 剩余: %d只\n", stFiltered, len(codeMap))
+			}
+
 			if topN == 0 {
 				topN = cfg.Signal.TopN
 			}
@@ -378,7 +390,6 @@ func signalCmd() *cobra.Command {
 				summary.Print()
 			}
 
-			stockNames := data.LoadStockNames(cfg.Data.RawDir + "/stocks.parquet")
 			ledger, _ := portfolio.Load("portfolio.yaml")
 			if ledger != nil {
 				summary := portfolio.Analyze(ledger, codeMap, stockNames)
