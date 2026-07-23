@@ -6,7 +6,9 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
+	"quant/internal/analyze"
 	"quant/internal/backtest"
 	"quant/internal/config"
 	"quant/internal/data"
@@ -35,6 +37,7 @@ func main() {
 	rootCmd.AddCommand(fetchCmd())
 	rootCmd.AddCommand(backtestCmd())
 	rootCmd.AddCommand(signalCmd())
+	rootCmd.AddCommand(analyzeCmd())
 	rootCmd.AddCommand(listCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -399,6 +402,37 @@ func signalCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&topN, "top", "n", 0, "显示前 N 条信号")
 
 	return cmd
+}
+
+func analyzeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "analyze <股票代码>",
+		Short: "分析单只股票",
+		Long:  `显示单只股票的价格/均线/策略信号/基本面/复权换算。示例: ./go-quant analyze 002594.SZ`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			code := args[0]
+			cfg := loadConfig()
+
+			r, err := analyze.Run(code, cfgPath)
+			if err != nil {
+				return err
+			}
+
+			// try to get adj factor
+			client := data.NewClient(cfg.Tushare.BaseURL, cfg.Tushare.Token, cfg.Tushare.RateLimitMs)
+			ctx := context.Background()
+			today := time.Now().Format("20060102")
+			yesterday := time.Now().AddDate(0, 0, -1).Format("20060102")
+			factors, err := client.FetchAdjFactors(ctx, code, yesterday, today)
+			if err == nil && len(factors) > 0 {
+				r.SetAdjFactor(factors[len(factors)-1].AdjFactor)
+			}
+
+			r.Print()
+			return nil
+		},
+	}
 }
 
 func listCmd() *cobra.Command {
