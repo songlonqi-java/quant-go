@@ -113,3 +113,10 @@ type IndexBar struct {
 func (b DailyBar) AdjustedPrice() float64 {
 	return b.Close
 }
+
+type NewsItem struct {
+	Datetime string `parquet:"datetime"`
+	Content  string `parquet:"content"`
+	Title    string `parquet:"title"`
+	Source   string `parquet:"source"`
+}

@@ -390,6 +390,33 @@ func (c *Client) FetchIndexDaily(ctx context.Context, tsCode, startDate, endDate
 	return result, nil
 }
 
+func (c *Client) FetchNews(ctx context.Context, startDate, endDate string) ([]NewsItem, error) {
+	fields := "datetime,content,title,source"
+	params := map[string]interface{}{
+		"start_date": startDate,
+		"end_date":   endDate,
+	}
+
+	fieldList, items, err := c.CallOnce(ctx, "major_news", params, fields)
+	if err != nil {
+		fieldList, items, err = c.CallOnce(ctx, "news", params, fields)
+		if err != nil {
+			return nil, err
+		}
+	}
+	idx := indexMap(fieldList)
+	var result []NewsItem
+	for _, item := range items {
+		result = append(result, NewsItem{
+			Datetime: getStr(item, idx, "datetime"),
+			Content:  getStr(item, idx, "content"),
+			Title:    getStr(item, idx, "title"),
+			Source:   getStr(item, idx, "source"),
+		})
+	}
+	return result, nil
+}
+
 func indexMap(fields []string) map[string]int {
 	m := make(map[string]int)
 	for i, f := range fields {

@@ -1,0 +1,298 @@
+package news
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"time"
+	"unicode"
+
+	"quant/internal/data"
+
+	"github.com/parquet-go/parquet-go"
+)
+
+type HotTopic struct {
+	Keyword string
+	Count   int
+	Stocks  []string
+}
+
+type NewsSummary struct {
+	TotalNews  int
+	DateRange  string
+	HotTopics  []HotTopic
+	HotStocks  []HotStock
+	Sentiment  string
+}
+
+type HotStock struct {
+	TsCode   string
+	Name     string
+	Mentions int
+}
+
+var stopWords = map[string]bool{
+	"公司": true, "股份": true, "有限": true, "集团": true, "中国": true,
+	"市场": true, "投资": true, "发布": true, "同比": true, "增长": true,
+	"一个": true, "可以": true, "没有": true, "他们": true, "我们": true,
+	"已经": true, "现在": true, "这个": true, "进行": true, "表示": true,
+	"什么": true, "亿元": true, "万元": true, "记者": true, "报道": true,
+	"信息": true, "数据": true, "情况": true, "问题": true, "影响": true,
+}
+
+func Analyze(ctx context.Context, client *data.Client, rawDir string, topN int) (*NewsSummary, error) {
+	var allNews []data.NewsItem
+
+	localNews, _ := loadLocalNews(rawDir)
+	if len(localNews) > 0 {
+		allNews = localNews
+	}
+
+	sinaNews, err := FetchSinaNews(80)
+	if err == nil && len(sinaNews) > 0 {
+		allNews = append(allNews, sinaNews...)
+		if len(allNews) > 0 {
+			saveLocalNews(rawDir, allNews)
+		}
+	}
+
+	if len(allNews) == 0 && client != nil && client.Token != "" {
+		today := time.Now().Format("20060102")
+		weekAgo := time.Now().AddDate(0, 0, -7).Format("20060102")
+		apiNews, err := client.FetchNews(ctx, weekAgo, today)
+		if err == nil && len(apiNews) > 0 {
+			allNews = append(allNews, apiNews...)
+			saveLocalNews(rawDir, allNews)
+		}
+	}
+
+	if len(allNews) == 0 {
+		return nil, nil
+	}
+
+	summary := &NewsSummary{
+		TotalNews: len(allNews),
+	}
+
+	if len(allNews) > 0 {
+		summary.DateRange = fmt.Sprintf("%s ~ %s",
+			allNews[len(allNews)-1].Datetime[:minInt(10, len(allNews[len(allNews)-1].Datetime))],
+			allNews[0].Datetime[:minInt(10, len(allNews[0].Datetime))])
+	}
+
+	summary.HotTopics = extractKeywords(allNews, topN)
+	summary.HotStocks = matchStocks(allNews, rawDir, topN)
+
+	return summary, nil
+}
+
+func (s *NewsSummary) Print() {
+	if s == nil || s.TotalNews == 0 {
+		return
+	}
+	fmt.Printf("\n========== 新闻热度 ==========\n")
+	fmt.Printf("近7日新闻: %d 条 (%s)\n", s.TotalNews, s.DateRange)
+
+	if len(s.HotTopics) > 0 {
+		fmt.Println("\n热门话题:")
+		for _, t := range s.HotTopics {
+			stockStr := ""
+			if len(t.Stocks) > 0 {
+				stockStr = fmt.Sprintf(" → %s", strings.Join(t.Stocks, ", "))
+			}
+			fmt.Printf("  %s (×%d)%s\n", t.Keyword, t.Count, stockStr)
+		}
+	}
+
+	if len(s.HotStocks) > 0 {
+		fmt.Println("\n受关注个股:")
+		for _, s := range s.HotStocks {
+			fmt.Printf("  %-10s %-8s 提及 %d 次\n", s.TsCode, s.Name, s.Mentions)
+		}
+	}
+	fmt.Println("==============================")
+}
+
+func extractKeywords(news []data.NewsItem, topN int) []HotTopic {
+	freq := make(map[string]int)
+	allText := ""
+	for _, n := range news {
+		allText += n.Title + " "
+	}
+
+	runes := []rune(allText)
+	for i := 0; i < len(runes)-1; i++ {
+		for l := 2; l <= 5 && i+l <= len(runes); l++ {
+			phrase := string(runes[i : i+l])
+			if isValidPhrase(phrase) {
+				freq[phrase]++
+			}
+		}
+	}
+
+	type kv struct {
+		k string
+		v int
+	}
+	var sorted []kv
+	for k, v := range freq {
+		if v >= 2 && !stopWords[k] {
+			sorted = append(sorted, kv{k, v})
+		}
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].v > sorted[j].v })
+
+	n := topN
+	if n > len(sorted) {
+		n = len(sorted)
+	}
+	var topics []HotTopic
+	for i := 0; i < n; i++ {
+		topics = append(topics, HotTopic{Keyword: sorted[i].k, Count: sorted[i].v})
+	}
+	return topics
+}
+
+func isValidPhrase(s string) bool {
+	for _, r := range s {
+		if !unicode.Is(unicode.Han, r) && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	runes := []rune(s)
+	if len(runes) < 2 {
+		return false
+	}
+	hasHan := false
+	for _, r := range runes {
+		if unicode.Is(unicode.Han, r) {
+			hasHan = true
+			break
+		}
+	}
+	return hasHan
+}
+
+func matchStocks(news []data.NewsItem, rawDir string, topN int) []HotStock {
+	names := loadStockNameMap(rawDir)
+	if len(names) == 0 {
+		return nil
+	}
+
+	allText := ""
+	for _, n := range news {
+		allText += n.Title + " " + n.Content + " "
+	}
+
+	mentions := make(map[string]int)
+	nameToCode := make(map[string]string)
+	for code, name := range names {
+		nameToCode[name] = code
+		count := strings.Count(allText, name)
+		if count > 0 {
+			mentions[code] = count
+		}
+	}
+
+	type kv struct {
+		code string
+		cnt  int
+	}
+	var sorted []kv
+	for code, cnt := range mentions {
+		sorted = append(sorted, kv{code, cnt})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].cnt > sorted[j].cnt })
+
+	n := topN
+	if n > len(sorted) {
+		n = len(sorted)
+	}
+	var stocks []HotStock
+	for i := 0; i < n; i++ {
+		stocks = append(stocks, HotStock{
+			TsCode:   sorted[i].code,
+			Name:     names[sorted[i].code],
+			Mentions: sorted[i].cnt,
+		})
+	}
+	return stocks
+}
+
+func loadStockNameMap(rawDir string) map[string]string {
+	names := make(map[string]string)
+	f, err := os.Open(rawDir + "/stocks.parquet")
+	if err != nil {
+		return names
+	}
+	defer f.Close()
+
+	reader := parquet.NewReader(f, parquet.SchemaOf(&data.StockInfo{}))
+	defer reader.Close()
+	for {
+		var s data.StockInfo
+		if err := reader.Read(&s); err != nil {
+			break
+		}
+		if s.Name != "" {
+			names[s.TsCode] = s.Name
+		}
+	}
+	return names
+}
+
+func loadLocalNews(rawDir string) ([]data.NewsItem, error) {
+	path := rawDir + "/news/latest.parquet"
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var result []data.NewsItem
+	reader := parquet.NewReader(f, parquet.SchemaOf(&data.NewsItem{}))
+	defer reader.Close()
+	for {
+		var n data.NewsItem
+		if err := reader.Read(&n); err != nil {
+			break
+		}
+		result = append(result, n)
+	}
+	return result, nil
+}
+
+func saveLocalNews(rawDir string, items []data.NewsItem) error {
+	dir := rawDir + "/news"
+	os.MkdirAll(dir, 0755)
+	return writeNewsParquet(dir+"/latest.parquet", items)
+}
+
+func writeNewsParquet(path string, items []data.NewsItem) error {
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	writer := parquet.NewWriter(f)
+	for _, n := range items {
+		if err := writer.Write(n); err != nil {
+			f.Close()
+			os.Remove(tmp)
+			return err
+		}
+	}
+	writer.Close()
+	f.Close()
+	return os.Rename(tmp, path)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

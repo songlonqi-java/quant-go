@@ -11,6 +11,7 @@ import (
 	"quant/internal/config"
 	"quant/internal/data"
 	"quant/internal/market"
+	"quant/internal/news"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 
@@ -344,6 +345,13 @@ func signalCmd() *cobra.Command {
 			marketStatus := market.Analyze(bars)
 			if marketStatus != nil {
 				marketStatus.Print()
+			}
+
+			summary, err := news.Analyze(context.Background(), nil, cfg.Data.RawDir, 8)
+			if err != nil {
+				fmt.Printf("新闻分析: %v\n", err)
+			} else if summary != nil {
+				summary.Print()
 			}
 
 			results := signal.Generate(codeMap, selectedStrategies, topN*3,
