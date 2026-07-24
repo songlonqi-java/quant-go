@@ -12,20 +12,31 @@ import (
 )
 
 type SignalResult struct {
-	Code        string
-	Name        string
-	Date        string
-	Close       float64
-	Strategies  map[string]SignalDetail
-	GroupScores map[string]float64
-	BuyCount    int
-	SellCount   int
-	RawScore    float64
-	TotalScore  float64
-	Confidence  float64
-	PositionPct float64
-	RiskLabels  []string
-	Reasons     []string
+	Horizon                 strategy.Horizon
+	Code                    string
+	Name                    string
+	Date                    string
+	Close                   float64
+	Strategies              map[string]SignalDetail
+	GroupScores             map[string]float64
+	BuyCount                int
+	SellCount               int
+	RawScore                float64
+	TotalScore              float64
+	Confidence              float64
+	PositionPct             float64
+	HasMoneyflow            bool
+	MoneyflowNetAmount      float64
+	LargeMoneyflowNetAmount float64
+	HasRealtime             bool
+	RealtimePrice           float64
+	RealtimeChangePct       float64
+	RealtimeUpdateAt        string
+	IntradayLabels          []string
+	Suppressed              bool
+	SuppressionReason       string
+	RiskLabels              []string
+	Reasons                 []string
 }
 
 type SignalDetail struct {
@@ -38,13 +49,30 @@ func Generate(barsMap map[string][]data.DailyBar, strategies []strategy.Strategy
 }
 
 func GenerateWithContext(barsMap map[string][]data.DailyBar, strategies []strategy.Strategy, topN int, names map[string]string, marketStatus *market.MarketStatus) []SignalResult {
-	var results []SignalResult
+	return GenerateWithContextAndMoneyflow(barsMap, strategies, topN, names, marketStatus, nil)
+}
+
+func GenerateWithContextAndMoneyflow(barsMap map[string][]data.DailyBar, strategies []strategy.Strategy, topN int, names map[string]string, marketStatus *market.MarketStatus, moneyflowStore *data.MoneyflowStore) []SignalResult {
 	for _, s := range strategies {
 		if u, ok := s.(strategy.UniverseUser); ok {
 			u.SetUniverse(barsMap)
 		}
 	}
 
+	grouped := groupStrategiesByHorizon(strategies)
+	var results []SignalResult
+	for _, horizon := range strategy.HorizonOrder() {
+		horizonResults := generateForHorizon(barsMap, grouped[horizon], topN, names, marketStatus, moneyflowStore, horizon)
+		results = append(results, horizonResults...)
+	}
+	return results
+}
+
+func generateForHorizon(barsMap map[string][]data.DailyBar, strategies []strategy.Strategy, topN int, names map[string]string, marketStatus *market.MarketStatus, moneyflowStore *data.MoneyflowStore, horizon strategy.Horizon) []SignalResult {
+	if len(strategies) == 0 {
+		return nil
+	}
+	var results []SignalResult
 	for code, bars := range barsMap {
 		if len(bars) < 2 {
 			continue
@@ -57,6 +85,7 @@ func GenerateWithContext(barsMap map[string][]data.DailyBar, strategies []strate
 		}
 
 		r := SignalResult{
+			Horizon:     horizon,
 			Code:        code,
 			Name:        name,
 			Date:        bars[lastIdx].TradeDate,
@@ -92,6 +121,7 @@ func GenerateWithContext(barsMap map[string][]data.DailyBar, strategies []strate
 			r.PositionPct = suggestedPositionPct(r, marketStatus)
 			r.RiskLabels = riskLabels(r, bars, lastIdx, marketStatus)
 			r.Reasons = reasons(r)
+			applyMoneyflowContext(&r, moneyflowStore)
 			results = append(results, r)
 		}
 	}
@@ -103,10 +133,53 @@ func GenerateWithContext(barsMap map[string][]data.DailyBar, strategies []strate
 		return results[i].TotalScore > results[j].TotalScore
 	})
 
+	return limitByRecommendation(results, topN)
+}
+
+func groupStrategiesByHorizon(strategies []strategy.Strategy) map[strategy.Horizon][]strategy.Strategy {
+	grouped := make(map[strategy.Horizon][]strategy.Strategy)
+	for _, s := range strategies {
+		horizon := strategy.HorizonForStrategy(s.Name())
+		grouped[horizon] = append(grouped[horizon], s)
+	}
+	return grouped
+}
+
+func limitByRecommendation(results []SignalResult, topN int) []SignalResult {
 	if topN > 0 && len(results) > topN {
-		return results[:topN]
+		buys := filterByRecommendation(results, "买入")
+		sells := filterByRecommendation(results, "卖出")
+		sort.Slice(buys, func(i, j int) bool {
+			if buys[i].TotalScore == buys[j].TotalScore {
+				return buys[i].Code < buys[j].Code
+			}
+			return buys[i].TotalScore > buys[j].TotalScore
+		})
+		sort.Slice(sells, func(i, j int) bool {
+			if sells[i].TotalScore == sells[j].TotalScore {
+				return sells[i].Code < sells[j].Code
+			}
+			return sells[i].TotalScore < sells[j].TotalScore
+		})
+		if len(buys) > topN {
+			buys = buys[:topN]
+		}
+		if len(sells) > topN {
+			sells = sells[:topN]
+		}
+		return append(buys, sells...)
 	}
 	return results
+}
+
+func FilterByHorizon(results []SignalResult, horizon strategy.Horizon) []SignalResult {
+	filtered := make([]SignalResult, 0, len(results))
+	for _, r := range results {
+		if r.Horizon == horizon {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
 }
 
 func (r SignalResult) SignalSummary() string {
@@ -124,6 +197,13 @@ func (r SignalResult) SignalSummary() string {
 }
 
 func (r SignalResult) Recommendation() string {
+	if r.Suppressed && rawRecommendation(r) == "买入" {
+		return "观望"
+	}
+	return rawRecommendation(r)
+}
+
+func rawRecommendation(r SignalResult) string {
 	if r.BuyCount > r.SellCount && r.TotalScore > 0 {
 		return "买入"
 	} else if r.SellCount > r.BuyCount && r.TotalScore < 0 {
@@ -273,6 +353,42 @@ func riskLabels(r SignalResult, bars []data.DailyBar, idx int, marketStatus *mar
 		labels = append(labels, "市场偏弱")
 	}
 	return labels
+}
+
+func applyMoneyflowContext(r *SignalResult, moneyflowStore *data.MoneyflowStore) {
+	if moneyflowStore == nil {
+		return
+	}
+	mf, ok := moneyflowStore.Get(r.Code, r.Date)
+	if !ok {
+		return
+	}
+
+	r.HasMoneyflow = true
+	r.MoneyflowNetAmount = mf.NetMfAmount
+	r.LargeMoneyflowNetAmount = mf.LargeNetAmount()
+
+	net := r.MoneyflowNetAmount
+	large := r.LargeMoneyflowNetAmount
+	switch r.Recommendation() {
+	case "买入":
+		switch {
+		case net > 0 && large > 0:
+			r.RiskLabels = append(r.RiskLabels, "资金确认")
+			r.Reasons = append(r.Reasons, fmt.Sprintf("资金净额%+.0f万，大单净额%+.0f万", net, large))
+		case net < 0 && large < 0:
+			r.RiskLabels = append(r.RiskLabels, "资金背离")
+			r.Reasons = append(r.Reasons, fmt.Sprintf("资金净额%+.0f万，大单净额%+.0f万", net, large))
+		case (net > 0 && large < 0) || (net < 0 && large > 0):
+			r.RiskLabels = append(r.RiskLabels, "资金分歧")
+			r.Reasons = append(r.Reasons, fmt.Sprintf("资金净额%+.0f万，大单净额%+.0f万", net, large))
+		}
+	case "卖出":
+		if net < 0 || large < 0 {
+			r.RiskLabels = append(r.RiskLabels, "资金流出")
+			r.Reasons = append(r.Reasons, fmt.Sprintf("资金净额%+.0f万，大单净额%+.0f万", net, large))
+		}
+	}
 }
 
 func reasons(r SignalResult) []string {

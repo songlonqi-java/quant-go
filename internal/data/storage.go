@@ -308,3 +308,32 @@ func writeGenericParquet[T any](path string, data []T) error {
 	file.Close()
 	return os.Rename(tmpPath, path)
 }
+
+func writeMergedGenericParquet[T any](path string, incoming []T, keyFn func(T) string) error {
+	if len(incoming) == 0 {
+		return nil
+	}
+	merged := make(map[string]T)
+	if existing, err := readGenericParquet[T](path); err == nil {
+		for _, item := range existing {
+			merged[keyFn(item)] = item
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	for _, item := range incoming {
+		merged[keyFn(item)] = item
+	}
+
+	keys := make([]string, 0, len(merged))
+	for key := range merged {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	out := make([]T, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, merged[key])
+	}
+	return writeGenericParquet(path, out)
+}

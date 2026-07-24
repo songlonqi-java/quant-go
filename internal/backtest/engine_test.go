@@ -69,6 +69,29 @@ func TestRunSkipsLimitUpBuyAtOpen(t *testing.T) {
 	}
 }
 
+func TestRunSkipsExactLimitUpBuyAtOpen(t *testing.T) {
+	bars := []data.DailyBar{
+		bar("20260101", 10, 10, 1000),
+		bar("20260102", 10.5, 10.4, 1000),
+	}
+	bars[1].UpLimit = 10.5
+	bars[1].DownLimit = 9.5
+
+	result := Run(bars, func(_ []data.DailyBar, idx int) strategy.SignalType {
+		if idx == 0 {
+			return strategy.Buy
+		}
+		return strategy.Hold
+	}, Config{InitialCapital: 1000, LimitPct: 0.2})
+
+	if result.TradeCount != 0 {
+		t.Fatalf("TradeCount = %d, want 0", result.TradeCount)
+	}
+	if result.SkippedSignals != 1 {
+		t.Fatalf("SkippedSignals = %d, want 1", result.SkippedSignals)
+	}
+}
+
 func TestRunKeepsBuyCashNonNegativeWithCommission(t *testing.T) {
 	bars := []data.DailyBar{
 		bar("20260101", 10, 10, 1000),

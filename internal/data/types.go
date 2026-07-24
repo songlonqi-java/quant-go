@@ -14,6 +14,8 @@ type DailyBar struct {
 	RawLow    float64 `parquet:"raw_low"`
 	RawClose  float64 `parquet:"raw_close"`
 	AdjFactor float64 `parquet:"adj_factor"`
+	UpLimit   float64 `parquet:"up_limit"`
+	DownLimit float64 `parquet:"down_limit"`
 }
 
 type StockInfo struct {
@@ -115,6 +117,38 @@ type IndexBar struct {
 	Amount    float64 `parquet:"amount"`
 }
 
+type StkLimit struct {
+	TradeDate string  `parquet:"trade_date"`
+	TsCode    string  `parquet:"ts_code"`
+	PreClose  float64 `parquet:"pre_close"`
+	UpLimit   float64 `parquet:"up_limit"`
+	DownLimit float64 `parquet:"down_limit"`
+}
+
+type Moneyflow struct {
+	TsCode        string  `parquet:"ts_code"`
+	TradeDate     string  `parquet:"trade_date"`
+	BuySmVol      float64 `parquet:"buy_sm_vol"`
+	BuySmAmount   float64 `parquet:"buy_sm_amount"`
+	SellSmVol     float64 `parquet:"sell_sm_vol"`
+	SellSmAmount  float64 `parquet:"sell_sm_amount"`
+	BuyMdVol      float64 `parquet:"buy_md_vol"`
+	BuyMdAmount   float64 `parquet:"buy_md_amount"`
+	SellMdVol     float64 `parquet:"sell_md_vol"`
+	SellMdAmount  float64 `parquet:"sell_md_amount"`
+	BuyLgVol      float64 `parquet:"buy_lg_vol"`
+	BuyLgAmount   float64 `parquet:"buy_lg_amount"`
+	SellLgVol     float64 `parquet:"sell_lg_vol"`
+	SellLgAmount  float64 `parquet:"sell_lg_amount"`
+	BuyElgVol     float64 `parquet:"buy_elg_vol"`
+	BuyElgAmount  float64 `parquet:"buy_elg_amount"`
+	SellElgVol    float64 `parquet:"sell_elg_vol"`
+	SellElgAmount float64 `parquet:"sell_elg_amount"`
+	NetMfVol      float64 `parquet:"net_mf_vol"`
+	NetMfAmount   float64 `parquet:"net_mf_amount"`
+	TradeCount    float64 `parquet:"trade_count"`
+}
+
 func (b DailyBar) AdjustedPrice() float64 {
 	return b.Close
 }
@@ -149,6 +183,34 @@ func (b DailyBar) TradeClose() float64 {
 		return b.RawClose
 	}
 	return b.Close
+}
+
+func (b DailyBar) HasLimitPrices() bool {
+	return b.UpLimit > 0 && b.DownLimit > 0
+}
+
+func (b DailyBar) IsLimitUpPrice(price float64) bool {
+	return b.UpLimit > 0 && price >= b.UpLimit*0.999
+}
+
+func (b DailyBar) IsLimitDownPrice(price float64) bool {
+	return b.DownLimit > 0 && price <= b.DownLimit*1.001
+}
+
+func (b DailyBar) IsLimitUpClose() bool {
+	return b.IsLimitUpPrice(b.TradeClose())
+}
+
+func (b DailyBar) IsLimitDownClose() bool {
+	return b.IsLimitDownPrice(b.TradeClose())
+}
+
+func (b DailyBar) IsLimitUpOpen() bool {
+	return b.IsLimitUpPrice(b.TradeOpen())
+}
+
+func (b DailyBar) IsLimitDownOpen() bool {
+	return b.IsLimitDownPrice(b.TradeOpen())
 }
 
 type NewsItem struct {

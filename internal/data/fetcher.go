@@ -10,9 +10,9 @@ import (
 )
 
 type Fetcher struct {
-	client    *Client
-	rawDir    string
-	prefixes  []string
+	client   *Client
+	rawDir   string
+	prefixes []string
 }
 
 func NewFetcher(client *Client, rawDir string, prefixes []string) *Fetcher {
@@ -409,6 +409,98 @@ func (f *Fetcher) FetchDailyBasicHistory(ctx context.Context, startYear, endYear
 	return nil
 }
 
+func (f *Fetcher) FetchStkLimitHistory(ctx context.Context, startYear, endYear int) error {
+	startDate := fmt.Sprintf("%d0101", startYear)
+	endDate := fmt.Sprintf("%d1231", endYear)
+	return f.FetchStkLimitRange(ctx, startDate, endDate)
+}
+
+func (f *Fetcher) FetchStkLimitRange(ctx context.Context, startDate, endDate string) error {
+	fmt.Printf(">>> 拉取涨跌停价格 %s ~ %s...\n", startDate, endDate)
+	tradeDays, err := f.tradeDaysForRange(ctx, startDate, endDate)
+	if err != nil {
+		return err
+	}
+	codeSet := f.loadUniverseCodeSet()
+	byYear := make(map[string][]StkLimit)
+	processed := 0
+
+	for _, day := range tradeDays {
+		limits, err := f.client.FetchStkLimitByDate(ctx, day)
+		if err != nil {
+			fmt.Printf("  警告: %s 涨跌停价格拉取失败: %v\n", day, err)
+			continue
+		}
+		limits = filterStkLimits(limits, codeSet)
+		if len(limits) > 0 {
+			byYear[day[:4]] = append(byYear[day[:4]], limits...)
+		}
+		processed++
+		if processed%20 == 0 {
+			fmt.Printf("  进度: %d 交易日, 已收集 %d 行, API %d次\n",
+				processed, countStkLimits(byYear), f.client.CallCount())
+		}
+	}
+
+	for year, limits := range byYear {
+		outFile := filepath.Join(f.rawDir, "stk_limit", year+".parquet")
+		if err := writeMergedGenericParquet(outFile, limits, func(l StkLimit) string {
+			return l.TradeDate + "|" + l.TsCode
+		}); err != nil {
+			return err
+		}
+		fmt.Printf(">>> %s 年涨跌停价格完成: %d 行 → %s\n", year, len(limits), outFile)
+	}
+	f.client.LogStatus()
+	return nil
+}
+
+func (f *Fetcher) FetchMoneyflowHistory(ctx context.Context, startYear, endYear int) error {
+	startDate := fmt.Sprintf("%d0101", startYear)
+	endDate := fmt.Sprintf("%d1231", endYear)
+	return f.FetchMoneyflowRange(ctx, startDate, endDate)
+}
+
+func (f *Fetcher) FetchMoneyflowRange(ctx context.Context, startDate, endDate string) error {
+	fmt.Printf(">>> 拉取个股资金流向 %s ~ %s...\n", startDate, endDate)
+	tradeDays, err := f.tradeDaysForRange(ctx, startDate, endDate)
+	if err != nil {
+		return err
+	}
+	codeSet := f.loadUniverseCodeSet()
+	byYear := make(map[string][]Moneyflow)
+	processed := 0
+
+	for _, day := range tradeDays {
+		flows, err := f.client.FetchMoneyflowByDate(ctx, day)
+		if err != nil {
+			fmt.Printf("  警告: %s 资金流向拉取失败: %v\n", day, err)
+			continue
+		}
+		flows = filterMoneyflows(flows, codeSet)
+		if len(flows) > 0 {
+			byYear[day[:4]] = append(byYear[day[:4]], flows...)
+		}
+		processed++
+		if processed%20 == 0 {
+			fmt.Printf("  进度: %d 交易日, 已收集 %d 行, API %d次\n",
+				processed, countMoneyflows(byYear), f.client.CallCount())
+		}
+	}
+
+	for year, flows := range byYear {
+		outFile := filepath.Join(f.rawDir, "moneyflow", year+".parquet")
+		if err := writeMergedGenericParquet(outFile, flows, func(m Moneyflow) string {
+			return m.TradeDate + "|" + m.TsCode
+		}); err != nil {
+			return err
+		}
+		fmt.Printf(">>> %s 年资金流向完成: %d 行 → %s\n", year, len(flows), outFile)
+	}
+	f.client.LogStatus()
+	return nil
+}
+
 func (f *Fetcher) FetchFinancials(ctx context.Context, startDate, endDate string, minMarketCap float64) error {
 	allStocks, err := f.client.FetchStockList(ctx)
 	if err != nil {
@@ -597,4 +689,80 @@ func readFinaParquet(filePath string) ([]FinaIndicator, error) {
 
 func readHsConstParquet(filePath string) ([]HsConst, error) {
 	return readGenericParquet[HsConst](filePath)
+}
+
+func (f *Fetcher) tradeDaysForRange(ctx context.Context, startDate, endDate string) ([]string, error) {
+	tradeDays := LoadTradeDates(f.rawDir, nil)
+	if len(tradeDays) == 0 {
+		cal, err := f.client.FetchTradeCal(ctx, "SSE", startDate, endDate)
+		if err != nil {
+			return nil, fmt.Errorf("获取交易日历失败: %w", err)
+		}
+		tradeDays = TradingDays(cal)
+		if err := writeGenericParquet(filepath.Join(f.rawDir, "trade_cal.parquet"), cal); err != nil {
+			fmt.Printf("  警告: 保存交易日历失败: %v\n", err)
+		}
+	}
+
+	var filtered []string
+	for _, day := range tradeDays {
+		if day >= startDate && day <= endDate {
+			filtered = append(filtered, day)
+		}
+	}
+	return filtered, nil
+}
+
+func (f *Fetcher) loadUniverseCodeSet() map[string]bool {
+	names := LoadStockNames(filepath.Join(f.rawDir, "stocks.parquet"))
+	if len(names) == 0 {
+		return nil
+	}
+	codeSet := make(map[string]bool, len(names))
+	for code := range names {
+		codeSet[code] = true
+	}
+	return codeSet
+}
+
+func filterStkLimits(limits []StkLimit, codeSet map[string]bool) []StkLimit {
+	if len(codeSet) == 0 {
+		return limits
+	}
+	filtered := make([]StkLimit, 0, len(limits))
+	for _, limit := range limits {
+		if codeSet[limit.TsCode] {
+			filtered = append(filtered, limit)
+		}
+	}
+	return filtered
+}
+
+func filterMoneyflows(flows []Moneyflow, codeSet map[string]bool) []Moneyflow {
+	if len(codeSet) == 0 {
+		return flows
+	}
+	filtered := make([]Moneyflow, 0, len(flows))
+	for _, flow := range flows {
+		if codeSet[flow.TsCode] {
+			filtered = append(filtered, flow)
+		}
+	}
+	return filtered
+}
+
+func countStkLimits(byYear map[string][]StkLimit) int {
+	total := 0
+	for _, rows := range byYear {
+		total += len(rows)
+	}
+	return total
+}
+
+func countMoneyflows(byYear map[string][]Moneyflow) int {
+	total := 0
+	for _, rows := range byYear {
+		total += len(rows)
+	}
+	return total
 }

@@ -4,9 +4,10 @@ Go 语言 A 股量化工具 — 数据拉取 · 策略回测 · 信号生成 · 
 
 ## 功能
 
-- **数据拉取**：Tushare 日线/基本面/财务/指数数据，带限速+重试+每日配额
+- **数据拉取**：Tushare 日线/涨跌停价/资金流向/基本面/财务/指数数据，带限速+重试+每日配额
 - **21 个策略**：短线 + 中线 + 长线 + 横截面/波动突破，可自由扩展
-- **信号生成**：多策略聚合打分 → 买入/卖出排名，输出 table/csv/json
+- **信号生成**：按短线/中线/长线分别聚合打分 → 买入/卖出排名，输出 table/csv/json
+- **盘中校验**：新浪实时行情覆盖候选股和持仓现价，提示高开、涨停、走弱等交易可行性风险
 - **回测引擎**：佣金/滑点建模，Sharpe/MaxDD/Calmar/胜率/盈亏比
 - **市场概况**：指数趋势 + 市场宽度 + 板块热度
 - **新闻热度**：新浪财经免费爬取 + 关键词提取 + 股票匹配
@@ -24,13 +25,15 @@ go build -o go-quant ./cmd/go-quant/
 
 # 3. 拉取数据
 ./go-quant fetch                    # 日线行情
+./go-quant fetch --stk-limit        # 每日涨跌停价格
+./go-quant fetch --moneyflow        # 个股资金流向
 ./go-quant fetch --daily-basic      # PE/PB/市值
 ./go-quant fetch --financials       # 财务数据
 ./go-quant fetch --hs300            # 沪深300
 ./go-quant fetch --index            # 指数数据
 
 # 4. 查看信号
-./go-quant signal -n 20
+./go-quant signal -n 5            # 每个周期买入/卖出各最多5条，默认带新浪盘中校验
 ./go-quant forward validate       # 回填前向测试收益
 ./go-quant forward migrate        # 迁移旧版前向测试CSV
 ```
@@ -39,8 +42,8 @@ go build -o go-quant ./cmd/go-quant/
 
 | 命令 | 说明 |
 |------|------|
-| `./go-quant fetch` | 拉取日线/基本面/财务/指数数据 |
-| `./go-quant signal` | 生成买卖信号（市场+新闻+持仓+策略） |
+| `./go-quant fetch` | 拉取日线/涨跌停价/资金流向/基本面/财务/指数数据 |
+| `./go-quant signal` | 生成短线/中线/长线买卖信号（市场+新闻+持仓+策略） |
 | `./go-quant backtest` | 策略历史回测 |
 | `./go-quant forward validate` | 回填前向测试 1/3/5 日收益 |
 | `./go-quant forward migrate` | 迁移旧版前向测试 CSV schema |
@@ -49,6 +52,8 @@ go build -o go-quant ./cmd/go-quant/
 详见 [docs/commands.md](docs/commands.md)
 
 ## 策略
+
+`signal` 输出会按交易周期分成三段：短线看明日到 5 个交易日，中线看 2 到 8 周，长线看数月以上配置价值。信号输出前还会先给出仓位策略：`空仓`、`观望`、`轻仓试错` 或 `正常买入`，避免市场不明确时强行推荐股票。
 
 | 类型 | 策略 | 说明 |
 |------|------|------|
@@ -60,7 +65,11 @@ go build -o go-quant ./cmd/go-quant/
 
 ## 数据口径
 
-新拉取的日线数据同时保存真实 OHLC（`raw_*`）和前复权 OHLC。策略计算默认使用前复权价格；回测成交、涨跌停判断、信号展示价和前向验证使用真实价格。旧版 Parquet 没有 `raw_*` 字段，回测和前向验证会报错；重新执行 `fetch` 可补齐，临时排查可加 `--allow-adjusted-trades`。
+新拉取的日线数据同时保存真实 OHLC（`raw_*`）和前复权 OHLC。策略计算默认使用前复权价格；回测成交、信号展示价和前向验证使用真实价格。旧版 Parquet 没有 `raw_*` 字段，回测和前向验证会报错；重新执行 `fetch` 可补齐，临时排查可加 `--allow-adjusted-trades`。
+
+`stk_limit` 会提供精确涨跌停价，用于回测、前向验证和涨停策略的不可成交判断；没有该数据时回落到配置的涨跌停百分比近似判断。`moneyflow` 会在 `signal` 输出中标注资金确认、资金背离或资金分歧，用来辅助筛选短线和中线信号。
+
+`signal` 默认会用新浪实时行情对候选股和持仓做盘中校验：展示实时价、盘中涨跌幅和高开/涨停/走弱等标签。该数据只用于当日交易判断和展示，不写入 `data/raw/daily/*.parquet`，也不参与正式历史回测；需要关闭时使用 `./go-quant signal --realtime=false`。如果仓位策略判断应空仓，前向测试会写入 `CASH` 记录，用于验证“不买”是否规避了风险。
 
 ## 持仓管理
 
@@ -69,11 +78,11 @@ go build -o go-quant ./cmd/go-quant/
 ```yaml
 transactions:
   - date: "20240315"
-    code: "600489.SH"
+    code: "000001.SZ"
     action: buy
     shares: 100
-    price: 22.501
-    comment: "黄金板块启动"
+    price: 10.00
+    comment: "示例买入"
 ```
 
 运行 `./go-quant signal` 自动显示持仓盈亏和已平仓历史统计。
@@ -92,6 +101,7 @@ quant-go/
 │   ├── signal/                 # 多策略信号聚合
 │   ├── market/                 # 市场情绪分析
 │   ├── news/                   # 新闻热度（新浪免费）
+│   ├── realtime/               # 新浪实时行情盘中校验
 │   └── portfolio/              # 持仓管理
 ├── docs/                       # 文档
 ├── config.example.yaml         # 配置模板

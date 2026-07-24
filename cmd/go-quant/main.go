@@ -16,6 +16,7 @@ import (
 	"quant/internal/market"
 	"quant/internal/news"
 	"quant/internal/portfolio"
+	"quant/internal/realtime"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 
@@ -65,6 +66,8 @@ func fetchCmd() *cobra.Command {
 		financials bool
 		hs300      bool
 		dailyBasic bool
+		stkLimit   bool
+		moneyflow  bool
 		indexData  bool
 		startYear  int
 		endYear    int
@@ -75,7 +78,7 @@ func fetchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fetch",
 		Short: "拉取股市数据",
-		Long: `从 Tushare 拉取 A 股日线、基本面、财务数据并存储。
+		Long: `从 Tushare 拉取 A 股日线、涨跌停价、资金流向、基本面、财务和指数数据并存储。
 
 使用场景：
   fetch                        拉取全量历史行情（按配置年份）
@@ -83,6 +86,8 @@ func fetchCmd() *cobra.Command {
   fetch --today --force        强制重新拉取今日数据
   fetch --date 20260721        补拉指定某一天
   fetch --daily-basic          拉取历史 PE/PB/市值/股息率
+  fetch --stk-limit            拉取每日涨跌停价格
+  fetch --moneyflow            拉取个股资金流向
   fetch --financials           拉取财务指标(ROE/利润率) + 利润表
   fetch --hs300                拉取沪深300成分股名单`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -116,6 +121,21 @@ func fetchCmd() *cobra.Command {
 
 			if dailyBasic {
 				return fetcher.FetchDailyBasicHistory(ctx, cfg.Fetch.StartYear, cfg.Fetch.EndYear, cfg.Fetch.MinMarketCap)
+			}
+
+			if stkLimit || moneyflow {
+				sd, ed := resolveAuxFetchRange(today, date, startDate, endDate, startYear, endYear, cfg)
+				if stkLimit {
+					if err := fetcher.FetchStkLimitRange(ctx, sd, ed); err != nil {
+						return err
+					}
+				}
+				if moneyflow {
+					if err := fetcher.FetchMoneyflowRange(ctx, sd, ed); err != nil {
+						return err
+					}
+				}
+				return nil
 			}
 
 			if date != "" {
@@ -166,6 +186,8 @@ func fetchCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&hs300, "hs300", false, "拉取沪深300成分股名单")
 	cmd.Flags().BoolVar(&indexData, "index", false, "拉取上证/深证/创业板指数数据")
 	cmd.Flags().BoolVar(&dailyBasic, "daily-basic", false, "拉取PE/PB/市值/股息率历史数据")
+	cmd.Flags().BoolVar(&stkLimit, "stk-limit", false, "拉取每日涨跌停价格")
+	cmd.Flags().BoolVar(&moneyflow, "moneyflow", false, "拉取个股资金流向")
 	cmd.Flags().IntVar(&startYear, "start-year", 0, "起始年份")
 	cmd.Flags().IntVar(&endYear, "end-year", 0, "结束年份")
 	cmd.Flags().StringVar(&startDate, "start", "", "起始日期 (YYYYMMDD)")
@@ -222,6 +244,7 @@ func backtestCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("加载数据失败: %w", err)
 			}
+			bars = applyStkLimitStore(fetcher, bars)
 
 			if startDate != "" {
 				bars = filterByDateRange(bars, startDate, endDate)
@@ -310,7 +333,9 @@ func signalCmd() *cobra.Command {
 		strategyNames []string
 		format        string
 		topN          int
+		realtimeOn    bool
 	)
+	realtimeOn = true
 
 	cmd := &cobra.Command{
 		Use:   "signal",
@@ -340,6 +365,7 @@ func signalCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("加载数据失败: %w", err)
 			}
+			bars = applyStkLimitStore(data.NewFetcher(nil, cfg.Data.RawDir, nil), bars)
 			sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
 			codeMap := data.GroupByCode(bars)
 
@@ -429,14 +455,36 @@ func signalCmd() *cobra.Command {
 				summary.Print()
 			}
 
+			var portfolioSummary *portfolio.Summary
 			ledger, _ := portfolio.Load("portfolio.yaml")
 			if ledger != nil {
-				summary := portfolio.Analyze(ledger, codeMap, stockNames)
-				portfolio.PrintSummary(summary)
-				portfolio.SaveReport(summary, cfg.Data.RawDir+"/reports")
+				portfolioSummary = portfolio.Analyze(ledger, codeMap, stockNames)
 			}
 
-			results := signal.GenerateWithContext(codeMap, selectedStrategies, topN, stockNames, marketStatus)
+			moneyflowStore := loadMoneyflowStore(fetcher)
+			results := signal.GenerateWithContextAndMoneyflow(codeMap, selectedStrategies, topN, stockNames, marketStatus, moneyflowStore)
+
+			if realtimeOn {
+				limitStore := loadStkLimitStore(fetcher)
+				if quoteMap, err := fetchRealtimeQuotes(results, portfolioSummary); err != nil && format == "table" {
+					fmt.Printf("实时行情: %v\n", err)
+				} else if len(quoteMap) > 0 {
+					signal.ApplyRealtimeQuotes(results, quoteMap, limitStore)
+					portfolio.ApplyRealtimeQuotes(portfolioSummary, quoteMap)
+					if format == "table" {
+						fmt.Printf(">>> 实时行情已加载: %d 只\n", len(quoteMap))
+					}
+				}
+			}
+			positionDecision := signal.ApplyPositionPolicy(results, marketStatus)
+			if format == "table" {
+				signal.PrintPositionDecision(positionDecision)
+			}
+
+			if portfolioSummary != nil {
+				portfolio.PrintSummary(portfolioSummary)
+				portfolio.SaveReport(portfolioSummary, cfg.Data.RawDir+"/reports")
+			}
 
 			if len(results) == 0 {
 				fmt.Println("今日无交易信号")
@@ -444,7 +492,8 @@ func signalCmd() *cobra.Command {
 			}
 
 			tradingDates := data.LoadTradeDates(cfg.Data.RawDir, bars)
-			if err := forward.Record(cfg.Data.RawDir+"/../forward_test", results, marketStatus, 5, tradingDates); err != nil && format == "table" {
+			shortResults := signal.FilterByHorizon(results, strategy.HorizonShort)
+			if err := forward.RecordWithDecision(cfg.Data.RawDir+"/../forward_test", shortResults, marketStatus, 5, tradingDates, positionDecision); err != nil && format == "table" {
 				fmt.Printf("前向测试记录失败: %v\n", err)
 			}
 
@@ -455,6 +504,7 @@ func signalCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&strategyNames, "strategy", "s", nil, "策略名称 (多个用逗号分隔)")
 	cmd.Flags().StringVarP(&format, "format", "f", "table", "输出格式: table, csv, json")
 	cmd.Flags().IntVarP(&topN, "top", "n", 0, "显示前 N 条信号")
+	cmd.Flags().BoolVar(&realtimeOn, "realtime", true, "使用新浪实时行情对候选股和持仓做盘中校验")
 
 	return cmd
 }
@@ -477,6 +527,7 @@ func forwardCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("加载数据失败: %w", err)
 			}
+			bars = applyStkLimitStore(data.NewFetcher(nil, cfg.Data.RawDir, nil), bars)
 			if q := data.CheckPriceDataQuality(bars); !q.HasCompleteRawPrices() && !allowAdjusted {
 				return fmt.Errorf("%s；前向验证需要真实价字段，请重新拉取行情数据，或临时使用 --allow-adjusted-trades", q.Summary())
 			}
@@ -546,7 +597,8 @@ func listCmd() *cobra.Command {
 			fmt.Println("可用策略:")
 			for _, name := range reg.List() {
 				s, _ := reg.Get(name)
-				fmt.Printf("  %s (预热期: %d 天)\n", name, s.Warmup())
+				horizon := strategy.HorizonForStrategy(name)
+				fmt.Printf("  %s [%s] (预热期: %d 天)\n", name, strategy.HorizonLabel(horizon), s.Warmup())
 			}
 			return nil
 		},
@@ -570,6 +622,71 @@ func loadFundStore(fetcher *data.Fetcher) *data.FundamentalStore {
 		return nil
 	}
 	return store
+}
+
+func loadMoneyflowStore(fetcher *data.Fetcher) *data.MoneyflowStore {
+	store, err := fetcher.LoadMoneyflowStore()
+	if err != nil {
+		fmt.Printf("警告: 加载资金流向失败: %v\n", err)
+		return nil
+	}
+	return store
+}
+
+func loadStkLimitStore(fetcher *data.Fetcher) *data.StkLimitStore {
+	store, err := fetcher.LoadStkLimitStore()
+	if err != nil {
+		fmt.Printf("警告: 加载涨跌停价格失败: %v\n", err)
+		return nil
+	}
+	return store
+}
+
+func applyStkLimitStore(fetcher *data.Fetcher, bars []data.DailyBar) []data.DailyBar {
+	store := loadStkLimitStore(fetcher)
+	return data.ApplyStkLimits(bars, store)
+}
+
+func fetchRealtimeQuotes(results []signal.SignalResult, portfolioSummary *portfolio.Summary) (map[string]realtime.Quote, error) {
+	var codes []string
+	for _, r := range results {
+		codes = append(codes, r.Code)
+	}
+	if portfolioSummary != nil {
+		for _, h := range portfolioSummary.Holdings {
+			codes = append(codes, h.Code)
+		}
+	}
+	codes = realtime.UniqueCodes(codes)
+	if len(codes) == 0 {
+		return nil, nil
+	}
+	provider := realtime.NewSinaProvider()
+	quotes, err := provider.Fetch(codes)
+	if err != nil {
+		return nil, err
+	}
+	return realtime.MapByCode(quotes), nil
+}
+
+func resolveAuxFetchRange(today bool, date, startDate, endDate string, startYear, endYear int, cfg *config.Config) (string, string) {
+	if date != "" {
+		return date, date
+	}
+	if today {
+		d := time.Now().Format("20060102")
+		return d, d
+	}
+	if startDate != "" && endDate != "" {
+		return startDate, endDate
+	}
+	if startYear == 0 {
+		startYear = cfg.Fetch.StartYear
+	}
+	if endYear == 0 {
+		endYear = cfg.Fetch.EndYear
+	}
+	return fmt.Sprintf("%d0101", startYear), fmt.Sprintf("%d1231", endYear)
 }
 
 func filterByDateRange(bars []data.DailyBar, start, end string) []data.DailyBar {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"quant/internal/data"
+	"quant/internal/realtime"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,15 +36,15 @@ type Holding struct {
 }
 
 type ClosedTrade struct {
-	Code     string
-	Name     string
-	BuyDate  string
-	SellDate string
-	Shares   float64
-	BuyPrice float64
+	Code      string
+	Name      string
+	BuyDate   string
+	SellDate  string
+	Shares    float64
+	BuyPrice  float64
 	SellPrice float64
-	Return   float64
-	PnL      float64
+	Return    float64
+	PnL       float64
 }
 
 type Summary struct {
@@ -121,8 +122,8 @@ func (l *Ledger) CurrentHoldings() []Holding {
 
 func (l *Ledger) ClosedTrades() []ClosedTrade {
 	type open struct {
-		date  string
-		price float64
+		date   string
+		price  float64
 		shares float64
 	}
 	openBuys := make(map[string][]open)
@@ -180,7 +181,7 @@ func Analyze(ledger *Ledger, barsMap map[string][]data.DailyBar, names map[strin
 		lastPrice := h.AvgCost
 		if ok && len(bars) > 0 {
 			sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
-			lastPrice = bars[len(bars)-1].Close
+			lastPrice = bars[len(bars)-1].TradeClose()
 		}
 		s.Holdings = append(s.Holdings, PositionStatus{
 			Code:      h.Code,
@@ -211,6 +212,25 @@ func Analyze(ledger *Ledger, barsMap map[string][]data.DailyBar, names map[strin
 		s.WinRate = float64(s.WinCount) / float64(totalTrades) * 100
 	}
 	return s
+}
+
+func ApplyRealtimeQuotes(s *Summary, quotes map[string]realtime.Quote) {
+	if s == nil || len(quotes) == 0 {
+		return
+	}
+	for i := range s.Holdings {
+		q, ok := quotes[s.Holdings[i].Code]
+		if !ok || q.Current <= 0 {
+			continue
+		}
+		h := &s.Holdings[i]
+		h.LastPrice = q.Current
+		h.MarketVal = h.LastPrice * h.Shares
+		h.PnL = (h.LastPrice - h.Cost) * h.Shares
+		if h.Cost > 0 {
+			h.PnLPct = (h.LastPrice/h.Cost - 1) * 100
+		}
+	}
 }
 
 func PrintSummary(s *Summary) {
@@ -289,12 +309,12 @@ func pnlBar(pct float64) string {
 }
 
 type ReportData struct {
-	GeneratedAt  string           `json:"generated_at"`
-	Holdings     []PositionStatus `json:"holdings"`
-	ClosedTrades []ClosedTrade    `json:"closed_trades"`
-	TotalRealized float64        `json:"total_realized"`
-	WinRate      float64         `json:"win_rate"`
-	TotalTrades  int             `json:"total_trades"`
+	GeneratedAt   string           `json:"generated_at"`
+	Holdings      []PositionStatus `json:"holdings"`
+	ClosedTrades  []ClosedTrade    `json:"closed_trades"`
+	TotalRealized float64          `json:"total_realized"`
+	WinRate       float64          `json:"win_rate"`
+	TotalTrades   int              `json:"total_trades"`
 }
 
 func SaveReport(s *Summary, path string) error {
@@ -304,12 +324,12 @@ func SaveReport(s *Summary, path string) error {
 	os.MkdirAll(path, 0755)
 
 	r := ReportData{
-		GeneratedAt:  time.Now().Format("2006-01-02 15:04:05"),
-		Holdings:     s.Holdings,
-		ClosedTrades: s.ClosedTrades,
+		GeneratedAt:   time.Now().Format("2006-01-02 15:04:05"),
+		Holdings:      s.Holdings,
+		ClosedTrades:  s.ClosedTrades,
 		TotalRealized: s.TotalRealized,
-		WinRate:      s.WinRate,
-		TotalTrades:  s.WinCount + s.LossCount,
+		WinRate:       s.WinRate,
+		TotalTrades:   s.WinCount + s.LossCount,
 	}
 
 	// JSON: 完整数据

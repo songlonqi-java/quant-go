@@ -19,6 +19,15 @@ import (
 const picksFile = "picks.csv"
 
 var headers = []string{
+	"signal_date", "target_date", "horizon", "rank", "code", "name", "close",
+	"buy_signals", "sell_signals", "total_score", "confidence", "position_pct",
+	"key_strategies", "market_status", "position_advice", "entry_plan", "invalid_condition",
+	"next_open", "next_close", "next_return_pct",
+	"day3_close", "day3_return_pct", "day5_close", "day5_return_pct",
+	"status", "notes",
+}
+
+var previousHeaders = []string{
 	"signal_date", "target_date", "rank", "code", "name", "close",
 	"buy_signals", "sell_signals", "total_score", "confidence", "position_pct",
 	"key_strategies", "market_status", "position_advice", "entry_plan", "invalid_condition",
@@ -37,6 +46,10 @@ var legacyHeaders = []string{
 }
 
 func Record(dir string, results []signal.SignalResult, marketStatus *market.MarketStatus, limit int, tradingDates []string) error {
+	return RecordWithDecision(dir, results, marketStatus, limit, tradingDates, signal.PositionDecision{})
+}
+
+func RecordWithDecision(dir string, results []signal.SignalResult, marketStatus *market.MarketStatus, limit int, tradingDates []string, decision signal.PositionDecision) error {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -50,6 +63,9 @@ func Record(dir string, results []signal.SignalResult, marketStatus *market.Mark
 		}
 	}
 	if len(picks) == 0 {
+		if shouldRecordCash(decision) {
+			return recordCashDecision(dir, results, marketStatus, tradingDates, decision)
+		}
 		return nil
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -71,18 +87,19 @@ func Record(dir string, results []signal.SignalResult, marketStatus *market.Mark
 	}
 	seen := make(map[string]bool)
 	for _, row := range existing {
-		seen[row["signal_date"]+"|"+row["target_date"]+"|"+row["code"]] = true
+		seen[row["signal_date"]+"|"+row["target_date"]+"|"+row["horizon"]+"|"+row["code"]] = true
 	}
 
 	var rows []map[string]string
 	for _, pick := range picks {
-		key := signalDate + "|" + targetDate + "|" + pick.Code
+		key := signalDate + "|" + targetDate + "|" + string(pick.Horizon) + "|" + pick.Code
 		if seen[key] {
 			continue
 		}
 		rows = append(rows, map[string]string{
 			"signal_date":       signalDate,
 			"target_date":       targetDate,
+			"horizon":           string(pick.Horizon),
 			"rank":              strconv.Itoa(len(rows) + 1),
 			"code":              pick.Code,
 			"name":              pick.Name,
@@ -108,6 +125,73 @@ func Record(dir string, results []signal.SignalResult, marketStatus *market.Mark
 		return err
 	}
 	return writeDailyMarkdown(dir, signalDate, targetDate, picks, marketStatus)
+}
+
+func shouldRecordCash(decision signal.PositionDecision) bool {
+	return decision.Action == signal.PositionActionCash || decision.Action == signal.PositionActionWatch
+}
+
+func recordCashDecision(dir string, results []signal.SignalResult, marketStatus *market.MarketStatus, tradingDates []string, decision signal.PositionDecision) error {
+	signalDate := latestSignalDate(results)
+	if signalDate == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	targetDate := nextTradingDate(signalDate, tradingDates)
+	path := filepath.Join(dir, picksFile)
+	if err := Migrate(dir); err != nil {
+		return err
+	}
+	existing, err := readRows(path)
+	if os.IsNotExist(err) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	key := signalDate + "|" + targetDate + "|short|CASH"
+	for _, row := range existing {
+		if row["signal_date"]+"|"+row["target_date"]+"|"+row["horizon"]+"|"+row["code"] == key {
+			return nil
+		}
+	}
+	row := map[string]string{
+		"signal_date":       signalDate,
+		"target_date":       targetDate,
+		"horizon":           "short",
+		"rank":              "0",
+		"code":              "CASH",
+		"name":              string(decision.Action),
+		"close":             "0.00",
+		"buy_signals":       "0",
+		"sell_signals":      "0",
+		"total_score":       "0.00",
+		"confidence":        "0",
+		"position_pct":      "0.0",
+		"key_strategies":    "cash",
+		"market_status":     marketSentiment(marketStatus),
+		"position_advice":   decision.Advice,
+		"entry_plan":        decision.Advice,
+		"invalid_condition": "市场转强且出现合格候选才解除空仓",
+		"status":            "cash",
+		"notes":             strings.Join(decision.Reasons, ";"),
+	}
+	if err := appendRows(path, []map[string]string{row}); err != nil {
+		return err
+	}
+	return writeCashMarkdown(dir, signalDate, targetDate, decision, marketStatus)
+}
+
+func latestSignalDate(results []signal.SignalResult) string {
+	var latest string
+	for _, r := range results {
+		if r.Date > latest {
+			latest = r.Date
+		}
+	}
+	return latest
 }
 
 func Migrate(dir string) error {
@@ -169,7 +253,10 @@ func Validate(dir string, barsMap map[string][]data.DailyBar) (int, error) {
 			prevLow := bars[signalIdx].TradeLow()
 			row["next_open"] = fmt.Sprintf("%.2f", open)
 			row["next_close"] = fmt.Sprintf("%.2f", close)
-			if prevClose > 0 && open > prevClose*1.03 {
+			if bars[targetIdx].IsLimitUpOpen() {
+				row["status"] = "no_trade_limit_up"
+				appendNote(row, "目标日开盘涨停，无法按计划买入")
+			} else if prevClose > 0 && open > prevClose*1.03 {
 				row["status"] = "no_trade_gap"
 				appendNote(row, "高开超过3%，按计划放弃")
 			} else {
@@ -234,7 +321,7 @@ func readRows(path string) ([]map[string]string, error) {
 			row[h] = ""
 		}
 		rowHeaders := records[0]
-		if sameHeader(records[0], legacyHeaders) && len(rec) == len(headers) {
+		if (sameHeader(records[0], legacyHeaders) || sameHeader(records[0], previousHeaders)) && len(rec) == len(headers) {
 			rowHeaders = headers
 		}
 		for i, v := range rec {
@@ -389,6 +476,36 @@ func writeDailyMarkdown(dir, signalDate, targetDate string, picks []signal.Signa
 	fmt.Fprintln(f, "- 回填次日开盘价、收盘价和次日收益。")
 	fmt.Fprintln(f, "- 回填 3 日和 5 日收盘收益。")
 	fmt.Fprintln(f, "- 高开超过 3% 或跌破前一交易日低点时标记为未触发/失效。")
+	return nil
+}
+
+func writeCashMarkdown(dir, signalDate, targetDate string, decision signal.PositionDecision, marketStatus *market.MarketStatus) error {
+	path := filepath.Join(dir, fmt.Sprintf("%s_for_%s.md", signalDate, targetDate))
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintf(f, "# %s Signal For %s\n\n", signalDate, targetDate)
+	fmt.Fprintln(f, "## Run Context")
+	fmt.Fprintln(f)
+	fmt.Fprintf(f, "- 数据最新交易日：%s\n", signalDate)
+	fmt.Fprintf(f, "- 建议验证日：%s\n", targetDate)
+	fmt.Fprintf(f, "- 市场情绪：%s\n", marketSentiment(marketStatus))
+	fmt.Fprintf(f, "- 仓位建议：%s\n\n", marketAdvice(marketStatus))
+	fmt.Fprintln(f, "## Position Decision")
+	fmt.Fprintln(f)
+	fmt.Fprintf(f, "- 策略状态：%s\n", decision.Action)
+	fmt.Fprintf(f, "- 买入候选：%d，合格候选：%d，过滤：%d\n", decision.CandidateBuys, decision.QualifiedBuys, decision.SuppressedBuys)
+	if len(decision.Reasons) > 0 {
+		fmt.Fprintf(f, "- 触发原因：%s\n", strings.Join(decision.Reasons, "；"))
+	}
+	fmt.Fprintf(f, "- 执行建议：%s\n\n", decision.Advice)
+	fmt.Fprintln(f, "## Validation Plan")
+	fmt.Fprintln(f)
+	fmt.Fprintln(f, "- `picks.csv` 记录 `CASH`，表示该日不新增买入。")
+	fmt.Fprintln(f, "- 后续验证时重点比较目标日市场和原始候选表现，判断空仓是否规避了亏损。")
 	return nil
 }
 

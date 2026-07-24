@@ -139,6 +139,9 @@ func canBuyAtOpen(prev, cur data.DailyBar, limitPct float64) bool {
 		return false
 	}
 	prevClose := prev.TradeClose()
+	if cur.IsLimitUpOpen() {
+		return false
+	}
 	if prevClose > 0 && open >= prevClose*(1+limitPct) {
 		return false
 	}
@@ -151,6 +154,9 @@ func canSellAtOpen(prev, cur data.DailyBar, limitPct float64) bool {
 		return false
 	}
 	prevClose := prev.TradeClose()
+	if cur.IsLimitDownOpen() {
+		return false
+	}
 	if prevClose > 0 && open <= prevClose*(1-limitPct) {
 		return false
 	}

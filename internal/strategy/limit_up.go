@@ -29,6 +29,9 @@ func (l *LimitUp) Signal(bars []data.DailyBar, idx int) SignalType {
 	}
 	prevChg := (prevClose/prevClose2 - 1) * 100
 	isLimitUp := prevChg >= l.LimitPct || (bars[idx-1].TradeHigh()-prevClose2)/prevClose2*100 >= l.LimitPct
+	if bars[idx-1].HasLimitPrices() {
+		isLimitUp = bars[idx-1].IsLimitUpClose() || bars[idx-1].IsLimitUpPrice(bars[idx-1].TradeHigh())
+	}
 
 	if isLimitUp {
 		curOpen := bars[idx].TradeOpen()
@@ -39,6 +42,9 @@ func (l *LimitUp) Signal(bars []data.DailyBar, idx int) SignalType {
 		isVolumeUp := avgVol > 0 && bars[idx].Vol > avgVol*l.VolumeRatio
 		isHoldingUp := bars[idx].TradeLow() > prevClose*0.98
 		isNotOpenLimit := curOpen < prevHigh*1.05
+		if bars[idx].HasLimitPrices() {
+			isNotOpenLimit = !bars[idx].IsLimitUpOpen()
+		}
 
 		if isGapUp && isVolumeUp && isHoldingUp && isNotOpenLimit {
 			return Buy

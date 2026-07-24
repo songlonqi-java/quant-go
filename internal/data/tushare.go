@@ -288,6 +288,68 @@ func (c *Client) FetchDailyBasicByDate(ctx context.Context, tradeDate string) ([
 	return basics, nil
 }
 
+func (c *Client) FetchStkLimitByDate(ctx context.Context, tradeDate string) ([]StkLimit, error) {
+	fields := "trade_date,ts_code,pre_close,up_limit,down_limit"
+	params := map[string]interface{}{
+		"trade_date": tradeDate,
+	}
+	fieldList, items, err := c.CallOnce(ctx, "stk_limit", params, fields)
+	if err != nil {
+		return nil, err
+	}
+	idx := indexMap(fieldList)
+	var limits []StkLimit
+	for _, item := range items {
+		limits = append(limits, StkLimit{
+			TradeDate: getStr(item, idx, "trade_date"),
+			TsCode:    getStr(item, idx, "ts_code"),
+			PreClose:  getFloat(item, idx, "pre_close"),
+			UpLimit:   getFloat(item, idx, "up_limit"),
+			DownLimit: getFloat(item, idx, "down_limit"),
+		})
+	}
+	return limits, nil
+}
+
+func (c *Client) FetchMoneyflowByDate(ctx context.Context, tradeDate string) ([]Moneyflow, error) {
+	fields := "ts_code,trade_date,buy_sm_vol,buy_sm_amount,sell_sm_vol,sell_sm_amount,buy_md_vol,buy_md_amount,sell_md_vol,sell_md_amount,buy_lg_vol,buy_lg_amount,sell_lg_vol,sell_lg_amount,buy_elg_vol,buy_elg_amount,sell_elg_vol,sell_elg_amount,net_mf_vol,net_mf_amount,trade_count"
+	params := map[string]interface{}{
+		"trade_date": tradeDate,
+	}
+	fieldList, items, err := c.CallOnce(ctx, "moneyflow", params, fields)
+	if err != nil {
+		return nil, err
+	}
+	idx := indexMap(fieldList)
+	var flows []Moneyflow
+	for _, item := range items {
+		flows = append(flows, Moneyflow{
+			TsCode:        getStr(item, idx, "ts_code"),
+			TradeDate:     getStr(item, idx, "trade_date"),
+			BuySmVol:      getFloat(item, idx, "buy_sm_vol"),
+			BuySmAmount:   getFloat(item, idx, "buy_sm_amount"),
+			SellSmVol:     getFloat(item, idx, "sell_sm_vol"),
+			SellSmAmount:  getFloat(item, idx, "sell_sm_amount"),
+			BuyMdVol:      getFloat(item, idx, "buy_md_vol"),
+			BuyMdAmount:   getFloat(item, idx, "buy_md_amount"),
+			SellMdVol:     getFloat(item, idx, "sell_md_vol"),
+			SellMdAmount:  getFloat(item, idx, "sell_md_amount"),
+			BuyLgVol:      getFloat(item, idx, "buy_lg_vol"),
+			BuyLgAmount:   getFloat(item, idx, "buy_lg_amount"),
+			SellLgVol:     getFloat(item, idx, "sell_lg_vol"),
+			SellLgAmount:  getFloat(item, idx, "sell_lg_amount"),
+			BuyElgVol:     getFloat(item, idx, "buy_elg_vol"),
+			BuyElgAmount:  getFloat(item, idx, "buy_elg_amount"),
+			SellElgVol:    getFloat(item, idx, "sell_elg_vol"),
+			SellElgAmount: getFloat(item, idx, "sell_elg_amount"),
+			NetMfVol:      getFloat(item, idx, "net_mf_vol"),
+			NetMfAmount:   getFloat(item, idx, "net_mf_amount"),
+			TradeCount:    getFloat(item, idx, "trade_count"),
+		})
+	}
+	return flows, nil
+}
+
 func (c *Client) FetchFinaIndicator(ctx context.Context, tsCode, startDate, endDate string) ([]FinaIndicator, error) {
 	fields := "ts_code,ann_date,end_date,roe,roa,grossprofit_margin,netprofit_margin,profit_dedt,basic_eps,dt_netprofit_yoy,total_revenue_ratio"
 	params := map[string]interface{}{
