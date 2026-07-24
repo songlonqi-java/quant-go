@@ -82,7 +82,7 @@ func fetchCmd() *cobra.Command {
 
 使用场景：
   fetch                        拉取全量历史行情（按配置年份）
-  fetch --today                拉取今日收盘数据（15:30后可用）
+  fetch --today                拉取今日收盘数据（16:00后可用）
   fetch --today --force        强制重新拉取今日数据
   fetch --date 20260721        补拉指定某一天
   fetch --daily-basic          拉取历史 PE/PB/市值/股息率
@@ -157,6 +157,9 @@ func fetchCmd() *cobra.Command {
 				if bars != nil {
 					fmt.Printf(">>> 今日数据共 %d 条\n", len(bars))
 				}
+				if err := fetcher.FetchIndexData(ctx, time.Now().Year(), time.Now().Year()); err != nil {
+					return fmt.Errorf("拉取今日指数失败: %w", err)
+				}
 				return nil
 			}
 
@@ -179,7 +182,7 @@ func fetchCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&today, "today", false, "拉取今日收盘数据（15:30后可用）")
+	cmd.Flags().BoolVar(&today, "today", false, "拉取今日收盘数据（16:00后可用）")
 	cmd.Flags().BoolVar(&force, "force", false, "强制重新拉取（覆盖已有文件）")
 	cmd.Flags().StringVar(&date, "date", "", "拉取指定日期 (YYYYMMDD)")
 	cmd.Flags().BoolVar(&financials, "financials", false, "拉取财务指标(ROE等) + 利润表")

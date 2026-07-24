@@ -13,7 +13,7 @@
 | 参数 | 说明 | 示例 |
 |------|------|------|
 | `(无)` | 全量历史行情 | `./go-quant fetch` |
-| `--today` | 今日收盘数据（~15:30后） | `./go-quant fetch --today` |
+| `--today` | 今日收盘数据（~16:00后） | `./go-quant fetch --today` |
 | `--today --force` | 强制重拉 | `./go-quant fetch --today --force` |
 | `--date YYYYMMDD` | 补拉某一天 | `./go-quant fetch --date 20260721` |
 | `--start/--end` | 日期范围 | `./go-quant fetch --start 20260101 --end 20260722` |

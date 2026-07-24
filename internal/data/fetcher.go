@@ -200,7 +200,7 @@ func (f *Fetcher) FetchToday(ctx context.Context, force bool) ([]DailyBar, error
 		return nil, fmt.Errorf("拉取今日行情失败: %w", err)
 	}
 	if len(bars) == 0 {
-		fmt.Println(">>> 今日数据尚未发布（Tushare 日线通常在15:30后更新），将使用本地已有数据")
+		fmt.Println(">>> 今日数据尚未发布（Tushare 日线通常在16:00后更新），将使用本地已有数据")
 		return nil, nil
 	}
 

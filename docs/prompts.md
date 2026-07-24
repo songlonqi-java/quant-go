@@ -7,18 +7,32 @@
 ## 使用前先复制这条（让 AI 了解项目环境）
 
 ```
-我在 /home/xxx/A_quant_go 目录下有一个 Go 量化项目，
-入口命令是 ./go-quant，配置文件是 config.yaml，
-日线数据在 data/raw/daily/*.parquet，
-涨跌停价在 data/raw/stk_limit/*.parquet，
-资金流向在 data/raw/moneyflow/*.parquet，
-基本面数据在 data/raw/daily_basic/*.parquet，
-新闻缓存数据在 data/raw/news/latest.parquet，
-我的持仓记录在 portfolio.yaml。
+我在 /home/xxx/quant-go 目录下有一个 Go 量化项目，
+入口命令是 ./go-quant，配置文件是 config.yaml，持仓记录在 portfolio.yaml。
 
-请先切换到项目目录：cd /home/xxx/A_quant_go
+数据目录：
+  data/raw/daily/*.parquet        日线行情（复权+真实成交价）
+  data/raw/stk_limit/*.parquet    涨跌停价
+  data/raw/moneyflow/*.parquet    个股资金流向
+  data/raw/daily_basic/*.parquet  PE/PB/市值/股息率/换手率
+  data/raw/fina/*.parquet          财务数据（ROE/利润表）
+  data/raw/index/*.parquet         指数行情（上证/深证/沪深300）
+  data/raw/news/latest.parquet     新闻热度缓存
+  data/raw/reports/                 信号报告导出目录（json/csv）
+  data/forward_test/                前向测试记录
+
+关键命令：
+  ./go-quant fetch   拉取数据（日线/涨跌停/资金/基本面/财务/指数）
+  ./go-quant signal  生成买卖信号（默认请求新浪实时行情做盘中校验）
+  ./go-quant backtest   回测策略
+  ./go-quant forward validate   验证前向测试收益
+  ./go-quant analyze <code>     个股深度分析
+  ./go-quant list               列出所有可用策略
+
+请先切换到项目目录：cd /home/xxx/quant-go
 编译命令：go build -o go-quant ./cmd/go-quant/
-信号命令会自动输出市场概况、新闻热度、持仓概览、短线/中线/长线买卖建议，并默认用新浪实时行情做盘中校验。
+可用 -c 指定配置文件路径，环境变量 QUANT_TUSHARE_TOKEN 可覆盖 Token，
+QUANT_DATA_DIR 可覆盖数据目录。
 ```
 
 ---
@@ -26,19 +40,21 @@
 ## 数据拉取
 
 ```
-切换到 /home/xxx/A_quant_go，编译代码，然后拉取今日收盘数据（日线行情、涨跌停价、资金流向）。
-如果 Tushare 数据还没发布（15:30 前），提示我稍后再试。
+切换到 /home/xxx/quant-go，编译代码，然后拉取今日收盘数据（日线行情、涨跌停价、资金流向、上证/深证/创业板指数）。
+如果 Tushare 数据还没发布（16:00 前），提示我稍后再试。
 命令:
 go build -o go-quant ./cmd/go-quant/
 ./go-quant fetch --today
 ./go-quant fetch --stk-limit --today
 ./go-quant fetch --moneyflow --today
+./go-quant fetch --index --today
 ```
 
 ```
-切换到项目目录，拉取近 5 年完整数据集（2021-2026）：
+切换到项目目录，拉取近 5 年完整数据集（默认 2020-2026）：
 先拉日线行情，再拉涨跌停价和资金流向，再拉 PE/PB/市值/股息率，再拉财务数据（ROE/利润表），最后拉沪深 300 和指数数据。
 分步执行，每步完成后告诉我进度和 API 调用次数。
+也可用 --start-year 和 --end-year 指定年份范围，如 --start-year 2024 --end-year 2026。
 命令依次是:
 ./go-quant fetch
 ./go-quant fetch --stk-limit
@@ -51,7 +67,9 @@ go build -o go-quant ./cmd/go-quant/
 
 ```
 检查 data/raw/daily/ 目录下 2020-2026 各年份的 parquet 文件行数是否完整，
-对比交易日历找出缺失的交易日，然后用 fill_gaps 脚本补全缺失数据。
+对比 data/raw/meta/trade_cal.parquet 交易日历找出缺失的交易日，
+然后用 ./go-quant fetch --date <YYYYMMDD> 逐个补全缺失日期。
+补完后用 ./go-quant fetch 重写年份 parquet 文件。
 ```
 
 ```
@@ -69,7 +87,7 @@ go build -o go-quant ./cmd/go-quant/
 ## 信号分析
 
 ```
-切换到 /home/xxx/A_quant_go，先编译，然后用默认策略跑信号分析，
+切换到 /home/xxx/quant-go，先编译，然后用默认策略跑信号分析，
 按短线/中线/长线分别显示买卖建议。
 命令: go build -o go-quant ./cmd/go-quant/ && ./go-quant signal -n 5
 注意输出包含：市场概况（上证指数/均线趋势/板块热度）→ 新闻热度 → 我的持仓盈亏 → 短中长买卖建议。
@@ -92,14 +110,14 @@ go build -o go-quant ./cmd/go-quant/
 ```
 
 ```
-先跑 ./go-quant fetch --today、./go-quant fetch --stk-limit --today、./go-quant fetch --moneyflow --today 拉取今日数据，再跑信号。
+先跑 ./go-quant fetch --today、./go-quant fetch --stk-limit --today、./go-quant fetch --moneyflow --today、./go-quant fetch --index --today 拉取今日数据，再跑信号。
 如果今日数据还没出来，用昨天数据的跑。
 输出前 10 个信号，重点标出多策略共振、资金确认/背离、新闻或政策催化。
 如果新闻和量化信号冲突，请明确降级或标注风险，不要强行推荐。
 ```
 
 ```
-最新数据已经拉取到了，请在 /home/xxx/A_quant_go 编译并运行：
+最新数据已经拉取到了，请在 /home/xxx/quant-go 编译并运行：
 ./go-quant signal -n 5
 
 请按短线、中线、长线分别输出买入和卖出/回避信号。
@@ -113,16 +131,47 @@ go build -o go-quant ./cmd/go-quant/
 7. 短线候选是否已写入 forward_test，方便明天验证
 ```
 
+```
+只使用指定策略生成信号（用 -s 逗号分隔，例如只看趋势类策略）：
+./go-quant signal -s macd,rsi,bollinger,ma_crossover -n 5
+
+短线专用策略组合：
+./go-quant signal -s sar,roc,kdj,bull_flag,limit_up,atr_breakout -n 10
+
+中线专用策略组合：
+./go-quant signal -s ma_crossover,macd,value_ma60,trend_pullback -n 10
+```
+
+```
+输出信号为 JSON 格式（供程序解析或回测系统对接）：
+./go-quant signal -f json -n 10
+
+输出信号为 CSV 格式（供 Excel/数据分析）：
+./go-quant signal -f csv -n 20
+包含完整字段：信号周期、当前价、资金流向金额、盘中标签、风险原因等。
+```
+
+```
+新闻缓存刷新：
+signal 命令自动从新浪拉取最新 80 条新闻并缓存到 data/raw/news/latest.parquet。
+如果怀疑新闻数据过旧，删除该文件后重新运行 signal 即可强制刷新。
+也可联网核验外部新闻，与本地新闻热度互相印证。
+```
+
 ---
+
 
 ## 盘中实时修正
 
 ```
-现在还没到 15:30，Tushare 今日正式日线可能还没有发布。
-请在 /home/xxx/A_quant_go 编译并运行：
+现在还没到 16:00，Tushare 今日正式日线可能还没有发布。
+请在 /home/xxx/quant-go 编译并运行：
 ./go-quant signal -n 5
 
-请用“昨天收盘后的量化信号 + 新浪实时行情”做盘中修正。
+（如果不需要新浪实时行情，加 --realtime=false 跳过；
+新浪实时行情请求失败时会自动退回本地数据。）
+
+请用"昨天收盘后的量化信号 + 新浪实时行情"做盘中修正。
 重点判断：
 1. 昨天短线 Top 候选今天是否已经高开超过 3%，高开过多就不要追
 2. 候选股是否接近涨停或已经涨停，提示可能买不进
@@ -176,21 +225,54 @@ go build -o go-quant ./cmd/go-quant/
 
 ```
 切换到项目目录，对 ma_crossover 策略进行回测：
-回测区间 2025-01-01 到最新日期，初始资金 10 万，显示绩效报告。
-命令: go build -o go-quant ./cmd/go-quant/ && ./go-quant backtest -s ma_crossover --start 20250101
-然后分析：总收益率、最大回撤、夏普比率、胜率分别是多少？这个策略表现如何？
+回测区间 2025-01-01 到 2025-12-31，初始资金 10 万，显示绩效报告。
+命令: go build -o go-quant ./cmd/go-quant/ && ./go-quant backtest -s ma_crossover --start 20250101 --end 20251231 --capital 100000
+然后分析：总收益率、最大回撤、夏普比率、胜率、盈亏比、年化波动率分别是多少？这个策略表现如何？
+（如果数据是旧版行情缺少真实成交价字段，加 --allow-adjusted-trades 临时使用复权价近似）
 ```
 
 ```
-对一只持仓股票（把 000001.SZ 替换为实际持仓代码），从 data/raw/daily/ 中提取它的历史数据，
-用全部默认策略逐一回测，按收益率从高到低排名，
-分析哪个策略在这只股票上表现最好，以及为什么。
+用逗号分隔同时回测多个策略并对比绩效：
+./go-quant backtest -s ma_crossover,macd,rsi,bollinger --start 20250101
+按总收益率、最大回撤、胜率从高到低排名，分析各策略的表现差异。
 ```
 
 ```
-回测短线策略组合（sar、roc、kdj、bull_flag、limit_up 五个），
-对比中线策略组合（ma_crossover、macd、value_ma60），
+回测短线策略组合：
+./go-quant backtest -s sar,roc,kdj,bull_flag,limit_up --start 20240101 --end 20241231
+对比中线策略组合：
+./go-quant backtest -s ma_crossover,macd,value_ma60 --start 20240101 --end 20241231
 看哪个组合在 2024 年表现更好。
+```
+
+```
+用 -n 限制回测股票数量（提速），例如只回测前 50 只：
+./go-quant backtest -s ma_crossover --start 20250101 -n 50
+```
+
+---
+
+## 前向测试
+
+```
+验证前向测试记录的收益表现（买入候选回填 1/3/5 日收益率）：
+./go-quant forward validate
+
+如果原始行情数据缺少真实成交价字段（旧版 parquet），使用复权价近似：
+./go-quant forward validate --allow-adjusted-trades
+
+迁移旧版 forward_test 记录到当前 schema（按新版本信号输出保持一致）：
+./go-quant forward migrate
+
+前向测试记录存放在 data/forward_test/ 目录，
+每日马克档由 systemd 定时任务自动生成。目录可指定 --dir <路径>。
+```
+
+```
+
+昨天信号中的短线买入候选，若系统已写入 forward_test，可以在收盘后运行：
+./go-quant forward validate
+对比 1 日/3 日/5 日收益，检验短线信号的准确性和稳定性。
 ```
 
 ---
@@ -238,15 +320,16 @@ portfolio.yaml 文件在项目根目录，格式是 transactions[] 交易流水�
 
 ```
 完整日终分析流程：
-1. cd /home/xxx/A_quant_go && go build -o go-quant ./cmd/go-quant/
+1. go build -o go-quant ./cmd/go-quant/
 2. ./go-quant fetch --today （如果数据还没出就跳过）
 3. ./go-quant fetch --stk-limit --today
 4. ./go-quant fetch --moneyflow --today
-5. ./go-quant signal -n 5 （默认请求新浪实时行情，获取候选股和持仓当前价）
-6. 分析输出：市场概况 + 新闻热度 + 仓位策略 + 持仓实时盈亏 + 短线/中线/长线交易信号
-7. 重点校验：是否应该空仓 + 多策略共振 + 资金确认/背离 + 新浪当前价/盘中涨跌幅 + 新闻/政策催化 + 涨跌停不可成交风险
-8. 如果仓位策略是空仓或观望，推荐买入写“无”，不要为了凑满 Top N 强行推荐
-9. 整理成一段简洁的日报：今日市场判断、是否空仓、推荐买入的股票、我的持仓操作建议（日报行数最好不好超过60行，字数太多影响观感）
+5. ./go-quant fetch --index --today
+6. ./go-quant signal -n 5 （默认请求新浪实时行情，获取候选股和持仓当前价）
+7. 分析输出：市场概况 + 新闻热度 + 仓位策略 + 持仓实时盈亏 + 短线/中线/长线交易信号
+8. 重点校验：是否应该空仓 + 多策略共振 + 资金确认/背离 + 新浪当前价/盘中涨跌幅 + 新闻/政策催化 + 涨跌停不可成交风险
+9. 如果仓位策略是空仓或观望，推荐买入写"无"，不要为了凑满 Top N 强行推荐
+10. 整理成一段简洁的日报：今日市场判断、是否空仓、推荐买入的股票、我的持仓操作建议（日报行数最好不好超过60行，字数太多影响观感）
 ```
 
 ```
@@ -278,13 +361,14 @@ portfolio.yaml 文件在项目根目录，格式是 transactions[] 交易流水�
 
 ```
 分析 601899.SH 紫金矿业：
-1. 从 data/raw/daily/ 提取它的历史数据，计算最近 60 日的 MA5/MA10/MA20/MA60 趋势
-2. 从 data/raw/daily_basic/ 提取 PE/PB/市值/股息率变化
-3. 从 data/raw/fina/ 提取 ROE 变化
-4. 从 data/raw/moneyflow/ 提取最新资金流向，判断资金确认、背离还是分歧
-5. 用全部默认策略跑一遍信号
-6. 从新闻热度中找有没有提及紫金矿业的新闻，必要时核验最近 24 小时外部新闻
-7. 综合给出：该买、该卖、还是持有？理由是什么？
+先运行内置分析命令获取技术面和基本面概览：
+./go-quant analyze 601899.SH
+（输出：均线 MA5/10/20/60/120/250、PE/PB/市值/股息率/换手率、全部策略信号）
+
+然后在此基础上深入：
+1. 从 data/raw/moneyflow/ 提取最新资金流向，判断资金确认、背离还是分歧
+2. 从新闻热度中找有没有提及紫金矿业的新闻，必要时核验最近 24 小时外部新闻
+3. 综合给出：该买、该卖、还是持有？理由是什么？
 ```
 
 ```
@@ -319,17 +403,44 @@ portfolio.yaml 文件在项目根目录，格式是 transactions[] 交易流水�
 
 ```
 检查数据完整性：
-1. 用 trade_cal API 获取 2020-2026 全部交易日
+1. 读取 data/raw/meta/trade_cal.parquet 获取 2020-2026 全部交易日
 2. 读取 data/raw/daily/*.parquet，统计每个年份的行数
 3. 对比找出缺失的交易日
-4. 用 FetchAllDailyByDate 逐个补全缺失日期
-5. 补完后重写年份 parquet 文件
+4. 用 ./go-quant fetch --date <YYYYMMDD> 逐个补全缺失日期
+5. 补完后重新运行 ./go-quant fetch 重写年份 parquet 文件
 6. 告诉我补齐了多少条数据
 ```
 
 ```
 我的 Tushare 额度只剩 2000 次了，帮我统计最近 7 天各 API 分别调用了多少次。
 如果额度紧张，建议我接下来优先拉什么数据。
+```
+
+---
+
+## 配置管理
+
+```
+查看和修改量化项目配置（config.yaml）：
+关键配置项：
+  fetch.min_market_cap    市值过滤（默认 100 亿，过滤小市值股票）
+  fetch.stock_prefixes    股票池范围（默认 60/00/001 = 上海主板/深圳主板/中小板）
+  tushare.daily_call_limit  每日 API 调用上限（默认 5000）
+
+环境变量覆盖（优先级高于 config.yaml）：
+  QUANT_TUSHARE_TOKEN      Tushare Token
+  QUANT_DATA_DIR           数据目录
+  QUANT_INITIAL_CAPITAL    回测初始资金
+  QUANT_RISK_FREE_RATE     无风险利率
+```
+
+```
+API 调用次数监控：
+每次 fetch 完成后系统会自动输出调用统计（今日已调用 X 次，上限 Y 次）。
+如果额度紧张（剩余 < 500），优先拉取日线行情和涨跌停价，资金流向和基本面可以延后。
+
+检查当日调用次数：
+看最后一次 fetch 命令的输出结尾，或运行任意 fetch 命令查看统计。
 ```
 
 ---
@@ -351,4 +462,23 @@ portfolio.yaml 文件在项目根目录，格式是 transactions[] 交易流水�
 信号输出中有些日期显示的是 2024 年的旧数据而不是最新交易日的，
 检查 signal/generator.go 和 cmd 中的筛选逻辑，
 确保只输出最新交易日有数据的股票。
+```
+
+```
+行情数据质量校验：
+如果回测或前向验证报错 "真实价字段缺失"，说明旧的 parquet 文件仅有复权价，
+缺少 raw_open/raw_high/raw_low/raw_close/adj_factor 字段。
+解决方案：重新拉取数据，例如 ./go-quant fetch --today --force
+临时方案：加 --allow-adjusted-trades 使用复权价近似（精度稍低但通常可接受）。
+
+检查特定年份数据是否有真实成交价字段：
+读取 data/raw/daily/<年份>.parquet 的 schema，确认是否包含 raw_open 等字段。
+```
+
+```
+数据文件损坏排查：
+如果某年份 parquet 文件读取报错，先用 parquet-tools 检查文件完整性，
+确认不是下载中断导致的截断文件。如果是，删除该年份文件后重新拉取：
+./go-quant fetch --start-year <YYYY> --end-year <YYYY>
+或逐个日期补全：./go-quant fetch --date <YYYYMMDD>
 ```
