@@ -54,7 +54,7 @@ transactions:
 ### 查看持仓状态
 
 ```bash
-./go-quant signal -n 5
+./go-quant signal -n 5 --watch 15
 ```
 
 输出示例：

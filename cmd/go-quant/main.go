@@ -335,9 +335,11 @@ func signalCmd() *cobra.Command {
 		strategyNames []string
 		format        string
 		topN          int
+		watchN        int
 		realtimeOn    bool
 	)
 	realtimeOn = true
+	watchN = 15
 
 	cmd := &cobra.Command{
 		Use:   "signal",
@@ -349,6 +351,7 @@ func signalCmd() *cobra.Command {
 				Config:        cfg,
 				StrategyNames: strategyNames,
 				TopN:          topN,
+				WatchN:        watchN,
 				Realtime:      realtimeOn,
 				PortfolioPath: "portfolio.yaml",
 				ForwardDir:    cfg.Data.RawDir + "/../forward_test",
@@ -393,7 +396,7 @@ func signalCmd() *cobra.Command {
 				portfolio.SaveReport(result.PortfolioSummary, cfg.Data.RawDir+"/reports")
 			}
 
-			if len(result.Signals) == 0 {
+			if len(result.Signals) == 0 && len(result.Watchlist) == 0 {
 				fmt.Println("今日无交易信号")
 				return nil
 			}
@@ -401,13 +404,14 @@ func signalCmd() *cobra.Command {
 				fmt.Printf("前向测试记录失败: %v\n", result.ForwardErr)
 			}
 
-			return reporter.Print(result.Signals)
+			return reporter.PrintWithWatch(result.Signals, result.Watchlist)
 		},
 	}
 
 	cmd.Flags().StringSliceVarP(&strategyNames, "strategy", "s", nil, "策略名称 (多个用逗号分隔)")
 	cmd.Flags().StringVarP(&format, "format", "f", "table", "输出格式: table, csv, json")
 	cmd.Flags().IntVarP(&topN, "top", "n", 0, "显示前 N 条信号")
+	cmd.Flags().IntVar(&watchN, "watch", 15, "显示观察机会数量（0=不显示）")
 	cmd.Flags().BoolVar(&realtimeOn, "realtime", true, "使用新浪实时行情对候选股和持仓做盘中校验")
 
 	return cmd

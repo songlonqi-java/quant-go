@@ -5,8 +5,8 @@ Go 语言 A 股量化工具 — 数据拉取 · 策略回测 · 信号生成 · 
 ## 功能
 
 - **数据拉取**：Tushare 日线/涨跌停价/资金流向/基本面/财务/指数数据，带限速+重试+每日配额
-- **21 个策略**：短线 + 中线 + 长线 + 横截面/波动突破，可自由扩展
-- **信号生成**：按短线/中线/长线分别聚合打分 → 买入/卖出排名，输出 table/csv/json
+- **23 个策略**：短线 + 中线 + 长线 + 横截面/波动突破，可自由扩展
+- **信号生成**：按短线/中线/长线分别聚合打分 → 正式买卖排名 + 观察机会榜，输出 table/csv/json
 - **盘中校验**：新浪实时行情覆盖候选股和持仓现价，提示高开、涨停、走弱等交易可行性风险
 - **回测引擎**：佣金/滑点建模，Sharpe/MaxDD/Calmar/胜率/盈亏比
 - **市场概况**：指数趋势 + 市场宽度 + 板块热度
@@ -33,7 +33,7 @@ go build -o go-quant ./cmd/go-quant/
 ./go-quant fetch --index            # 指数数据
 
 # 4. 查看信号
-./go-quant signal -n 5            # 每个周期买入/卖出各最多5条，默认带新浪盘中校验
+./go-quant signal -n 5 --watch 15 # 每个周期买入/卖出各最多5条，额外显示15条观察机会
 ./go-quant forward validate       # 回填前向测试收益
 ./go-quant forward migrate        # 迁移旧版前向测试CSV
 ```
@@ -53,13 +53,13 @@ go build -o go-quant ./cmd/go-quant/
 
 ## 策略
 
-`signal` 输出会按交易周期分成三段：短线看明日到 5 个交易日，中线看 2 到 8 周，长线看数月以上配置价值。信号输出前还会先给出仓位策略：`空仓`、`观望`、`轻仓试错` 或 `正常买入`，避免市场不明确时强行推荐股票。
+`signal` 输出会按交易周期分成三段：短线看明日到 5 个交易日，中线看 2 到 8 周，长线看数月以上配置价值。信号输出前还会先给出仓位策略：`空仓`、`观望`、`轻仓试错` 或 `正常买入`，避免市场不明确时强行推荐股票。`--watch` 会额外列出观察机会，只作为跟踪池，不等同于正式买入推荐。
 
 | 类型 | 策略 | 说明 |
 |------|------|------|
 | 短线 | `limit_up` `sar` `kdj` `roc` `williams_r` `rsi` `mfi` `bull_flag` `bollinger` `donchian` `volume_breakout` `bottom_reversal` | 1-21 天周期 |
 | 中线 | `ma_crossover` `etf_rotation` `macd` `ma_sticky` `value_ma60` `relative_strength` `atr_breakout` `trend_pullback` | 20-120 天周期 |
-| 长线 | `dividend_deviation` | 600 天周期 |
+| 长线 | `dividend_deviation` `quality_value` `earnings_growth` | 120-600 天周期 |
 
 详见 [docs/strategies.md](docs/strategies.md)
 

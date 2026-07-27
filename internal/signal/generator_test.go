@@ -73,6 +73,91 @@ func TestGenerateWithContextAndMoneyflowAddsConfirmation(t *testing.T) {
 	}
 }
 
+func TestLimitByRecommendationDropsWatchOnlyResults(t *testing.T) {
+	results := []SignalResult{
+		{
+			Horizon:    strategy.HorizonShort,
+			Code:       "000001.SZ",
+			BuyCount:   2,
+			TotalScore: 2.0,
+		},
+		{
+			Horizon:    strategy.HorizonShort,
+			Code:       "000002.SZ",
+			BuyCount:   1,
+			SellCount:  1,
+			TotalScore: 0.8,
+		},
+		{
+			Horizon:    strategy.HorizonMid,
+			Code:       "000003.SZ",
+			BuyCount:   2,
+			TotalScore: 1.5,
+		},
+	}
+
+	formal := LimitByRecommendation(results, 1)
+
+	if len(formal) != 2 {
+		t.Fatalf("len(formal) = %d, want 2", len(formal))
+	}
+	if formal[0].Code != "000001.SZ" {
+		t.Fatalf("formal[0].Code = %s, want 000001.SZ", formal[0].Code)
+	}
+	if formal[1].Code != "000003.SZ" {
+		t.Fatalf("formal[1].Code = %s, want 000003.SZ", formal[1].Code)
+	}
+}
+
+func TestSelectWatchlistKeepsNonFormalBuyCandidates(t *testing.T) {
+	formal := []SignalResult{
+		{
+			Horizon:    strategy.HorizonShort,
+			Code:       "000001.SZ",
+			BuyCount:   3,
+			TotalScore: 3.0,
+			Confidence: 80,
+		},
+	}
+	results := []SignalResult{
+		formal[0],
+		{
+			Horizon:    strategy.HorizonShort,
+			Code:       "000002.SZ",
+			BuyCount:   1,
+			TotalScore: 1.2,
+			Confidence: 55,
+		},
+		{
+			Horizon:    strategy.HorizonShort,
+			Code:       "000003.SZ",
+			BuyCount:   1,
+			SellCount:  1,
+			TotalScore: 0.8,
+			Confidence: 45,
+		},
+		{
+			Horizon:    strategy.HorizonShort,
+			Code:       "000004.SZ",
+			SellCount:  1,
+			TotalScore: -1.0,
+			Confidence: 30,
+		},
+	}
+
+	watchlist := SelectWatchlist(results, formal, 10)
+
+	if len(watchlist) != 2 {
+		t.Fatalf("len(watchlist) = %d, want 2", len(watchlist))
+	}
+	if watchlist[0].Code != "000002.SZ" {
+		t.Fatalf("watchlist[0].Code = %s, want 000002.SZ", watchlist[0].Code)
+	}
+	if watchlist[1].Code != "000003.SZ" {
+		t.Fatalf("watchlist[1].Code = %s, want 000003.SZ", watchlist[1].Code)
+	}
+}
+
 func TestApplyPositionPolicySuppressesBuysWhenBearishWithoutMoneyflow(t *testing.T) {
 	results := []SignalResult{
 		{

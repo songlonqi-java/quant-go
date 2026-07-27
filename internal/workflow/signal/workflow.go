@@ -20,6 +20,7 @@ type Options struct {
 	Config        *config.Config
 	StrategyNames []string
 	TopN          int
+	WatchN        int
 	Realtime      bool
 	PortfolioPath string
 	ForwardDir    string
@@ -33,6 +34,7 @@ type Result struct {
 	PortfolioSummary *portfolio.Summary
 	PositionDecision signals.PositionDecision
 	Signals          []signals.SignalResult
+	Watchlist        []signals.SignalResult
 	RealtimeLoaded   int
 	NewsErr          error
 	RealtimeErr      error
@@ -94,24 +96,62 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		result.PortfolioSummary = portfolio.Analyze(ledger, ds.CodeMap, ds.StockNames)
 	}
 
-	result.Signals = signals.GenerateWithContextAndMoneyflow(ds.CodeMap, selectedStrategies, topN, ds.StockNames, result.MarketStatus, ds.Moneyflows)
+	allSignals := signals.GenerateWithContextAndMoneyflow(ds.CodeMap, selectedStrategies, 0, ds.StockNames, result.MarketStatus, ds.Moneyflows)
+	preliminarySignals := signals.LimitByRecommendation(allSignals, topN)
+	preliminaryWatchlist := signals.SelectWatchlist(allSignals, preliminarySignals, opts.WatchN)
 
 	if opts.Realtime {
-		quoteMap, err := fetchRealtimeQuotes(result.Signals, result.PortfolioSummary)
+		quoteMap, err := fetchRealtimeQuotes(realtimeTargets(preliminarySignals, preliminaryWatchlist), result.PortfolioSummary)
 		if err != nil {
 			result.RealtimeErr = err
 		} else if len(quoteMap) > 0 {
-			signals.ApplyRealtimeQuotes(result.Signals, quoteMap, ds.StkLimits)
+			signals.ApplyRealtimeQuotes(allSignals, quoteMap, ds.StkLimits)
 			portfolio.ApplyRealtimeQuotes(result.PortfolioSummary, quoteMap)
 			result.RealtimeLoaded = len(quoteMap)
 		}
 	}
 
-	result.PositionDecision = signals.ApplyPositionPolicy(result.Signals, result.MarketStatus)
-	if len(result.Signals) > 0 {
-		result.ForwardErr = forward.RecordWithDecision(opts.ForwardDir, result.Signals, result.MarketStatus, 5, ds.TradingDates, result.PositionDecision)
+	result.PositionDecision = signals.ApplyPositionPolicy(allSignals, result.MarketStatus)
+	result.Signals = signals.LimitByRecommendation(matchingSignals(allSignals, preliminarySignals), topN)
+	result.Watchlist = signals.SelectWatchlist(matchingSignals(allSignals, realtimeTargets(preliminarySignals, preliminaryWatchlist)), result.Signals, opts.WatchN)
+
+	forwardSignals := result.Signals
+	if len(forwardSignals) == 0 && shouldRecordCash(result.PositionDecision) {
+		forwardSignals = allSignals
+	}
+	if len(forwardSignals) > 0 {
+		result.ForwardErr = forward.RecordWithDecision(opts.ForwardDir, forwardSignals, result.MarketStatus, 5, ds.TradingDates, result.PositionDecision)
 	}
 	return result, nil
+}
+
+func realtimeTargets(signalsList []signals.SignalResult, watchlist []signals.SignalResult) []signals.SignalResult {
+	targets := make([]signals.SignalResult, 0, len(signalsList)+len(watchlist))
+	targets = append(targets, signalsList...)
+	targets = append(targets, watchlist...)
+	return targets
+}
+
+func matchingSignals(source []signals.SignalResult, targets []signals.SignalResult) []signals.SignalResult {
+	keys := make(map[string]bool, len(targets))
+	for _, r := range targets {
+		keys[workflowSignalKey(r)] = true
+	}
+	matched := make([]signals.SignalResult, 0, len(targets))
+	for _, r := range source {
+		if keys[workflowSignalKey(r)] {
+			matched = append(matched, r)
+		}
+	}
+	return matched
+}
+
+func workflowSignalKey(r signals.SignalResult) string {
+	return string(r.Horizon) + "|" + r.Code
+}
+
+func shouldRecordCash(decision signals.PositionDecision) bool {
+	return decision.Action == signals.PositionActionCash || decision.Action == signals.PositionActionWatch
 }
 
 func selectStrategies(requested, defaults []string) ([]strategy.Strategy, []string, error) {

@@ -133,7 +133,7 @@ func generateForHorizon(barsMap map[string][]data.DailyBar, strategies []strateg
 		return results[i].TotalScore > results[j].TotalScore
 	})
 
-	return limitByRecommendation(results, topN)
+	return LimitByRecommendation(results, topN)
 }
 
 func groupStrategiesByHorizon(strategies []strategy.Strategy) map[strategy.Horizon][]strategy.Strategy {
@@ -145,31 +145,97 @@ func groupStrategiesByHorizon(strategies []strategy.Strategy) map[strategy.Horiz
 	return grouped
 }
 
-func limitByRecommendation(results []SignalResult, topN int) []SignalResult {
-	if topN > 0 && len(results) > topN {
-		buys := filterByRecommendation(results, "买入")
-		sells := filterByRecommendation(results, "卖出")
-		sort.Slice(buys, func(i, j int) bool {
-			if buys[i].TotalScore == buys[j].TotalScore {
-				return buys[i].Code < buys[j].Code
-			}
-			return buys[i].TotalScore > buys[j].TotalScore
-		})
-		sort.Slice(sells, func(i, j int) bool {
-			if sells[i].TotalScore == sells[j].TotalScore {
-				return sells[i].Code < sells[j].Code
-			}
-			return sells[i].TotalScore < sells[j].TotalScore
-		})
-		if len(buys) > topN {
-			buys = buys[:topN]
-		}
-		if len(sells) > topN {
-			sells = sells[:topN]
-		}
-		return append(buys, sells...)
+func LimitByRecommendation(results []SignalResult, topN int) []SignalResult {
+	if topN <= 0 {
+		return results
 	}
-	return results
+	var limited []SignalResult
+	for _, horizon := range strategy.HorizonOrder() {
+		limited = append(limited, limitRecommendationGroup(FilterByHorizon(results, horizon), topN)...)
+	}
+	return limited
+}
+
+func limitRecommendationGroup(results []SignalResult, topN int) []SignalResult {
+	buys := filterByRecommendation(results, "买入")
+	sells := filterByRecommendation(results, "卖出")
+	sort.Slice(buys, func(i, j int) bool {
+		if buys[i].TotalScore == buys[j].TotalScore {
+			return buys[i].Code < buys[j].Code
+		}
+		return buys[i].TotalScore > buys[j].TotalScore
+	})
+	sort.Slice(sells, func(i, j int) bool {
+		if sells[i].TotalScore == sells[j].TotalScore {
+			return sells[i].Code < sells[j].Code
+		}
+		return sells[i].TotalScore < sells[j].TotalScore
+	})
+	if len(buys) > topN {
+		buys = buys[:topN]
+	}
+	if len(sells) > topN {
+		sells = sells[:topN]
+	}
+	return append(buys, sells...)
+}
+
+func SelectWatchlist(results []SignalResult, formal []SignalResult, limit int) []SignalResult {
+	if limit <= 0 {
+		return nil
+	}
+	formalKeys := make(map[string]bool, len(formal))
+	for _, r := range formal {
+		formalKeys[signalKey(r)] = true
+	}
+
+	watch := make([]SignalResult, 0, limit)
+	for _, r := range results {
+		if formalKeys[signalKey(r)] || !isWatchCandidate(r) {
+			continue
+		}
+		watch = append(watch, r)
+	}
+	sort.Slice(watch, func(i, j int) bool {
+		left := watchScore(watch[i])
+		right := watchScore(watch[j])
+		if left == right {
+			if watch[i].TotalScore == watch[j].TotalScore {
+				return watch[i].Code < watch[j].Code
+			}
+			return watch[i].TotalScore > watch[j].TotalScore
+		}
+		return left > right
+	})
+	if len(watch) > limit {
+		watch = watch[:limit]
+	}
+	return watch
+}
+
+func signalKey(r SignalResult) string {
+	return string(r.Horizon) + "|" + r.Code
+}
+
+func isWatchCandidate(r SignalResult) bool {
+	if r.BuyCount == 0 || r.TotalScore <= 0 {
+		return false
+	}
+	if rawRecommendation(r) == "卖出" {
+		return false
+	}
+	return true
+}
+
+func watchScore(r SignalResult) float64 {
+	score := r.TotalScore + float64(r.BuyCount)*0.25 + r.Confidence/100
+	if r.SellCount > 0 {
+		score -= float64(r.SellCount) * 0.8
+	}
+	if r.Suppressed {
+		score -= 0.2
+	}
+	return score
 }
 
 func FilterByHorizon(results []SignalResult, horizon strategy.Horizon) []SignalResult {
