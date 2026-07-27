@@ -79,7 +79,7 @@ var defaultConfig = Config{
 			"kdj", "williams_r", "donchian", "mfi",
 			"sar", "roc", "ma_sticky", "limit_up",
 			"bottom_reversal", "relative_strength", "atr_breakout",
-			"trend_pullback",
+			"trend_pullback", "quality_value", "earnings_growth",
 		},
 		TopN: 20,
 	},

@@ -124,6 +124,19 @@ func (fs *FundamentalStore) GetROEAsOf(tsCode, date string) (float64, bool) {
 	return 0, false
 }
 
+func (fs *FundamentalStore) GetFinaIndicatorAsOf(tsCode, date string) (FinaIndicator, bool) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	if list, ok := fs.finaIndicators[tsCode]; ok && len(list) > 0 {
+		for _, fi := range list {
+			if fi.AnnDate != "" && fi.AnnDate <= date {
+				return fi, true
+			}
+		}
+	}
+	return FinaIndicator{}, false
+}
+
 func (fs *FundamentalStore) GetAverageROE(tsCode string, periods int) (float64, bool) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()

@@ -12,13 +12,12 @@ import (
 	"quant/internal/backtest"
 	"quant/internal/config"
 	"quant/internal/data"
+	"quant/internal/dataset"
 	"quant/internal/forward"
-	"quant/internal/market"
-	"quant/internal/news"
 	"quant/internal/portfolio"
-	"quant/internal/realtime"
 	"quant/internal/signal"
 	"quant/internal/strategy"
+	signalworkflow "quant/internal/workflow/signal"
 
 	"github.com/spf13/cobra"
 )
@@ -234,7 +233,7 @@ func backtestCmd() *cobra.Command {
 			}
 
 			fetcher := data.NewFetcher(nil, cfg.Data.RawDir, nil)
-			fundStore := loadFundStore(fetcher)
+			fundStore := dataset.LoadFundamentals(cfg.Data.RawDir)
 			if fundStore != nil {
 				for _, s := range selectedStrategies {
 					if u, ok := s.(strategy.FundStoreUser); ok {
@@ -346,161 +345,63 @@ func signalCmd() *cobra.Command {
 		Long:  `基于本地数据和多策略分析，生成今日的买入/卖出建议。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
-			reg := strategy.DefaultRegistry()
-
-			var selectedStrategies []strategy.Strategy
-			if len(strategyNames) == 0 {
-				strategyNames = cfg.Signal.DefaultStrategies
-			}
-			for _, name := range strategyNames {
-				s, ok := reg.Get(name)
-				if !ok {
-					fmt.Printf("警告: 策略 %q 不存在，跳过\n", name)
-					continue
-				}
-				selectedStrategies = append(selectedStrategies, s)
-			}
-			if len(selectedStrategies) == 0 {
-				return fmt.Errorf("没有可用的策略")
-			}
-
-			bars, err := data.ReadParquetDir(cfg.Data.RawDir + "/daily")
+			result, err := signalworkflow.Run(context.Background(), signalworkflow.Options{
+				Config:        cfg,
+				StrategyNames: strategyNames,
+				TopN:          topN,
+				Realtime:      realtimeOn,
+				PortfolioPath: "portfolio.yaml",
+				ForwardDir:    cfg.Data.RawDir + "/../forward_test",
+			})
 			if err != nil {
-				return fmt.Errorf("加载数据失败: %w", err)
+				return err
 			}
-			bars = applyStkLimitStore(data.NewFetcher(nil, cfg.Data.RawDir, nil), bars)
-			sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
-			codeMap := data.GroupByCode(bars)
-
-			var latestDate string
-			for _, stockBars := range codeMap {
-				sort.Slice(stockBars, func(i, j int) bool { return stockBars[i].TradeDate < stockBars[j].TradeDate })
-				last := stockBars[len(stockBars)-1].TradeDate
-				if last > latestDate {
-					latestDate = last
-				}
-			}
-			filteredMap := make(map[string][]data.DailyBar)
-			skipped := 0
-			for code, stockBars := range codeMap {
-				if stockBars[len(stockBars)-1].TradeDate == latestDate {
-					filteredMap[code] = stockBars
-				} else {
-					skipped++
-				}
-			}
-			codeMap = filteredMap
-			fmt.Printf("最新交易日: %s, 有效股票: %d (跳过%d只过期股票)\n", latestDate, len(codeMap), skipped)
-
-			stockNames := data.LoadStockNames(cfg.Data.RawDir + "/stocks.parquet")
-			stFiltered := 0
-			for code, name := range stockNames {
-				if strings.Contains(name, "ST") || strings.Contains(name, "*ST") {
-					delete(codeMap, code)
-					stFiltered++
-				}
-			}
-			if stFiltered > 0 {
-				fmt.Printf("过滤ST股: %d只, 剩余: %d只\n", stFiltered, len(codeMap))
-			}
-
-			fetcher := data.NewFetcher(nil, cfg.Data.RawDir, nil)
-			fundStore := loadFundStore(fetcher)
-			if fundStore != nil {
-				if cfg.Fetch.MinMarketCap > 0 {
-					noBasicFiltered := 0
-					for code := range codeMap {
-						_, _, hasBasic := fundStore.GetLatestPE(code)
-						if !hasBasic {
-							delete(codeMap, code)
-							noBasicFiltered++
-						}
-					}
-					if noBasicFiltered > 0 {
-						fmt.Printf("过滤无基本面数据(小盘股): %d只, 剩余: %d只\n", noBasicFiltered, len(codeMap))
-					}
-				}
-				for _, s := range selectedStrategies {
-					if u, ok := s.(strategy.FundStoreUser); ok {
-						u.SetFundStore(fundStore)
-					}
-				}
-			}
-			rawQuality := data.CheckPriceDataQuality(recentBarsForQuality(codeMap, 2))
-			hasRecentRawPrices := rawQuality.HasCompleteRawPrices()
-			if !hasRecentRawPrices {
-				fmt.Printf("警告: 最近交易日%s；将跳过依赖真实成交价的策略，持仓/前向验证需重拉数据后才准确\n", rawQuality.Summary())
-				selectedStrategies = filterStrategies(selectedStrategies, map[string]bool{"limit_up": true})
-				strategyNames = strategyNamesFrom(selectedStrategies)
-				if len(selectedStrategies) == 0 {
-					return fmt.Errorf("真实价字段缺失后没有可用策略")
-				}
-			}
-
-			if topN == 0 {
-				topN = cfg.Signal.TopN
-			}
-
 			reporter := signal.NewReporter(format)
 
-			fmt.Printf("策略: %s\n", strings.Join(strategyNames, ", "))
-			fmt.Printf("股票数: %d, 数据量: %d\n", len(codeMap), len(bars))
-
-			marketStatus := market.Analyze(bars)
-			if marketStatus != nil {
-				marketStatus.Print()
+			ds := result.Dataset
+			fmt.Printf("最新交易日: %s, 有效股票: %d (跳过%d只过期股票)\n", ds.LatestDate, len(ds.CodeMap), ds.SkippedStale)
+			if ds.FilteredST > 0 {
+				fmt.Printf("过滤ST股: %d只, 剩余: %d只\n", ds.FilteredST, len(ds.CodeMap))
+			}
+			if ds.FilteredNoBasic > 0 {
+				fmt.Printf("过滤无基本面数据(小盘股): %d只, 剩余: %d只\n", ds.FilteredNoBasic, len(ds.CodeMap))
+			}
+			if !result.PriceQuality.HasCompleteRawPrices() {
+				fmt.Printf("警告: 最近交易日%s；将跳过依赖真实成交价的策略，持仓/前向验证需重拉数据后才准确\n", result.PriceQuality.Summary())
+			}
+			fmt.Printf("策略: %s\n", strings.Join(result.StrategyNames, ", "))
+			fmt.Printf("股票数: %d, 数据量: %d\n", len(ds.CodeMap), len(ds.Bars))
+			if result.MarketStatus != nil {
+				result.MarketStatus.Print()
+			}
+			if result.NewsErr != nil {
+				fmt.Printf("新闻分析: %v\n", result.NewsErr)
+			} else if result.NewsSummary != nil {
+				result.NewsSummary.Print()
+			}
+			if result.RealtimeErr != nil && format == "table" {
+				fmt.Printf("实时行情: %v\n", result.RealtimeErr)
+			} else if result.RealtimeLoaded > 0 && format == "table" {
+				fmt.Printf(">>> 实时行情已加载: %d 只\n", result.RealtimeLoaded)
 			}
 
-			summary, err := news.Analyze(context.Background(), nil, cfg.Data.RawDir, 8)
-			if err != nil {
-				fmt.Printf("新闻分析: %v\n", err)
-			} else if summary != nil {
-				summary.Print()
-			}
-
-			var portfolioSummary *portfolio.Summary
-			ledger, _ := portfolio.Load("portfolio.yaml")
-			if ledger != nil {
-				portfolioSummary = portfolio.Analyze(ledger, codeMap, stockNames)
-			}
-
-			moneyflowStore := loadMoneyflowStore(fetcher)
-			results := signal.GenerateWithContextAndMoneyflow(codeMap, selectedStrategies, topN, stockNames, marketStatus, moneyflowStore)
-
-			if realtimeOn {
-				limitStore := loadStkLimitStore(fetcher)
-				if quoteMap, err := fetchRealtimeQuotes(results, portfolioSummary); err != nil && format == "table" {
-					fmt.Printf("实时行情: %v\n", err)
-				} else if len(quoteMap) > 0 {
-					signal.ApplyRealtimeQuotes(results, quoteMap, limitStore)
-					portfolio.ApplyRealtimeQuotes(portfolioSummary, quoteMap)
-					if format == "table" {
-						fmt.Printf(">>> 实时行情已加载: %d 只\n", len(quoteMap))
-					}
-				}
-			}
-			positionDecision := signal.ApplyPositionPolicy(results, marketStatus)
 			if format == "table" {
-				signal.PrintPositionDecision(positionDecision)
+				signal.PrintPositionDecision(result.PositionDecision)
+			}
+			if result.PortfolioSummary != nil {
+				portfolio.PrintSummary(result.PortfolioSummary)
+				portfolio.SaveReport(result.PortfolioSummary, cfg.Data.RawDir+"/reports")
 			}
 
-			if portfolioSummary != nil {
-				portfolio.PrintSummary(portfolioSummary)
-				portfolio.SaveReport(portfolioSummary, cfg.Data.RawDir+"/reports")
-			}
-
-			if len(results) == 0 {
+			if len(result.Signals) == 0 {
 				fmt.Println("今日无交易信号")
 				return nil
 			}
-
-			tradingDates := data.LoadTradeDates(cfg.Data.RawDir, bars)
-			shortResults := signal.FilterByHorizon(results, strategy.HorizonShort)
-			if err := forward.RecordWithDecision(cfg.Data.RawDir+"/../forward_test", shortResults, marketStatus, 5, tradingDates, positionDecision); err != nil && format == "table" {
-				fmt.Printf("前向测试记录失败: %v\n", err)
+			if result.ForwardErr != nil && format == "table" {
+				fmt.Printf("前向测试记录失败: %v\n", result.ForwardErr)
 			}
 
-			return reporter.Print(results)
+			return reporter.Print(result.Signals)
 		},
 	}
 
@@ -608,68 +509,13 @@ func listCmd() *cobra.Command {
 	}
 }
 
-func loadFundStore(fetcher *data.Fetcher) *data.FundamentalStore {
-	store := data.NewFundamentalStore()
-
-	basicStore, err := fetcher.LoadDailyBasicStore()
-	if err == nil && basicStore != nil {
-		store.MergeFrom(basicStore)
-	}
-
-	finaStore, err := fetcher.LoadFinaStore()
-	if err == nil && finaStore != nil {
-		store.MergeFrom(finaStore)
-	}
-
-	if !store.HasData() {
-		return nil
-	}
-	return store
-}
-
-func loadMoneyflowStore(fetcher *data.Fetcher) *data.MoneyflowStore {
-	store, err := fetcher.LoadMoneyflowStore()
-	if err != nil {
-		fmt.Printf("警告: 加载资金流向失败: %v\n", err)
-		return nil
-	}
-	return store
-}
-
-func loadStkLimitStore(fetcher *data.Fetcher) *data.StkLimitStore {
+func applyStkLimitStore(fetcher *data.Fetcher, bars []data.DailyBar) []data.DailyBar {
 	store, err := fetcher.LoadStkLimitStore()
 	if err != nil {
 		fmt.Printf("警告: 加载涨跌停价格失败: %v\n", err)
-		return nil
+		return bars
 	}
-	return store
-}
-
-func applyStkLimitStore(fetcher *data.Fetcher, bars []data.DailyBar) []data.DailyBar {
-	store := loadStkLimitStore(fetcher)
 	return data.ApplyStkLimits(bars, store)
-}
-
-func fetchRealtimeQuotes(results []signal.SignalResult, portfolioSummary *portfolio.Summary) (map[string]realtime.Quote, error) {
-	var codes []string
-	for _, r := range results {
-		codes = append(codes, r.Code)
-	}
-	if portfolioSummary != nil {
-		for _, h := range portfolioSummary.Holdings {
-			codes = append(codes, h.Code)
-		}
-	}
-	codes = realtime.UniqueCodes(codes)
-	if len(codes) == 0 {
-		return nil, nil
-	}
-	provider := realtime.NewSinaProvider()
-	quotes, err := provider.Fetch(codes)
-	if err != nil {
-		return nil, err
-	}
-	return realtime.MapByCode(quotes), nil
 }
 
 func resolveAuxFetchRange(today bool, date, startDate, endDate string, startYear, endYear int, cfg *config.Config) (string, string) {
@@ -713,43 +559,6 @@ func sortedCodes(codeMap map[string][]data.DailyBar) []string {
 	}
 	sort.Strings(codes)
 	return codes
-}
-
-func filterStrategies(strategies []strategy.Strategy, skip map[string]bool) []strategy.Strategy {
-	filtered := make([]strategy.Strategy, 0, len(strategies))
-	for _, s := range strategies {
-		if skip[s.Name()] {
-			continue
-		}
-		filtered = append(filtered, s)
-	}
-	return filtered
-}
-
-func strategyNamesFrom(strategies []strategy.Strategy) []string {
-	names := make([]string, 0, len(strategies))
-	for _, s := range strategies {
-		names = append(names, s.Name())
-	}
-	return names
-}
-
-func recentBarsForQuality(codeMap map[string][]data.DailyBar, lookback int) []data.DailyBar {
-	if lookback <= 0 {
-		lookback = 1
-	}
-	recent := make([]data.DailyBar, 0, len(codeMap)*lookback)
-	for _, bars := range codeMap {
-		if len(bars) == 0 {
-			continue
-		}
-		start := len(bars) - lookback
-		if start < 0 {
-			start = 0
-		}
-		recent = append(recent, bars[start:]...)
-	}
-	return recent
 }
 
 func printBacktestAggregate(metricsList []backtest.PerformanceMetrics) {

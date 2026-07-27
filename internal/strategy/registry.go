@@ -73,6 +73,8 @@ func DefaultRegistry() *Registry {
 	r.Register(NewRelativeStrength(20, 60, 120, 10))
 	r.Register(NewATRBreakout(20, 14, 20, 6, 1.2))
 	r.Register(NewTrendPullback(2.5, 1.3))
+	r.Register(NewQualityValue(120, 25, 3, 12, 1.5))
+	r.Register(NewEarningsGrowth(60, 120, 60, 10, 5, 10))
 	return r
 }
 

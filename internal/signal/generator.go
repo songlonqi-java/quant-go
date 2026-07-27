@@ -213,20 +213,7 @@ func rawRecommendation(r SignalResult) string {
 }
 
 func strategyGroup(name string) string {
-	switch name {
-	case "ma_crossover", "macd", "sar", "roc", "donchian", "etf_rotation", "relative_strength":
-		return "trend"
-	case "volume_breakout", "limit_up", "ma_sticky", "atr_breakout":
-		return "volume"
-	case "rsi", "kdj", "williams_r", "mfi", "bollinger", "bottom_reversal":
-		return "reversal"
-	case "value_ma60", "dividend_deviation":
-		return "value"
-	case "bull_flag", "trend_pullback":
-		return "pattern"
-	default:
-		return "other"
-	}
+	return string(strategy.GroupForStrategy(name))
 }
 
 func groupCap(group string) float64 {
@@ -351,6 +338,14 @@ func riskLabels(r SignalResult, bars []data.DailyBar, idx int, marketStatus *mar
 	}
 	if marketStatus != nil && (strings.Contains(marketStatus.Sentiment, "偏空") || strings.Contains(marketStatus.Sentiment, "强烈看空")) {
 		labels = append(labels, "市场偏弱")
+	}
+	if marketStatus != nil {
+		for _, flag := range marketStatus.RiskFlags {
+			switch flag {
+			case "亏钱效应", "跌停扩散", "涨停退潮":
+				labels = append(labels, flag)
+			}
+		}
 	}
 	return labels
 }

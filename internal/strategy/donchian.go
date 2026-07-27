@@ -19,8 +19,8 @@ func (d *Donchian) Signal(bars []data.DailyBar, idx int) SignalType {
 	if idx < d.Warmup() || idx < 1 {
 		return Hold
 	}
-	upper, lower := d.channel(bars, idx)
-	prevUpper, prevLower := d.channel(bars, idx-1)
+	upper, lower := d.channel(bars, idx-1)
+	prevUpper, prevLower := d.channel(bars, idx-2)
 	curClose := bars[idx].Close
 	prevClose := bars[idx-1].Close
 
@@ -37,14 +37,23 @@ func (d *Donchian) Score(bars []data.DailyBar, idx int) float64 {
 	if idx < d.Warmup() {
 		return 0
 	}
-	upper, lower := d.channel(bars, idx)
+	upper, lower := d.channel(bars, idx-1)
 	if upper == lower {
 		return 0
 	}
-	return (bars[idx].Close - lower) / (upper - lower) * 100 - 50
+	return (bars[idx].Close-lower)/(upper-lower)*100 - 50
 }
 
 func (d *Donchian) channel(bars []data.DailyBar, idx int) (upper, lower float64) {
+	if len(bars) == 0 {
+		return 0, 0
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(bars) {
+		idx = len(bars) - 1
+	}
 	start := idx - d.Period + 1
 	if start < 0 {
 		start = 0

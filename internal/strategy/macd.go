@@ -41,43 +41,33 @@ func (m *MACD) Score(bars []data.DailyBar, idx int) float64 {
 }
 
 func (m *MACD) macdAt(bars []data.DailyBar, idx int) (dif, dea, hist float64) {
-	shortEMA := ema(bars, idx, m.Short)
-	longEMA := ema(bars, idx, m.Long)
-	dif = shortEMA - longEMA
-
-	if idx < m.Long+m.SignalPeriod-1 {
-		return dif, 0, 0
+	if len(bars) == 0 || idx < 0 {
+		return 0, 0, 0
+	}
+	if idx >= len(bars) {
+		idx = len(bars) - 1
 	}
 
-	var difSum float64
-	count := 0
-	for i := idx - m.SignalPeriod + 1; i <= idx; i++ {
-		s := ema(bars, i, m.Short)
-		l := ema(bars, i, m.Long)
-		difSum += s - l
-		count++
-	}
-	if count > 0 {
-		dea = difSum / float64(count)
-	}
-	hist = (dif - dea) * 2
-	return
-}
+	shortAlpha := 2.0 / float64(m.Short+1)
+	longAlpha := 2.0 / float64(m.Long+1)
+	signalAlpha := 2.0 / float64(m.SignalPeriod+1)
 
-func ema(bars []data.DailyBar, idx, period int) float64 {
-	if idx < period-1 {
-		return 0
-	}
-	alpha := 2.0 / float64(period+1)
-
-	var emaVal float64
-	start := idx - period + 1
-	for i := start; i <= idx; i++ {
-		if i == start {
-			emaVal = bars[i].Close
+	shortEMA := bars[0].Close
+	longEMA := bars[0].Close
+	dea = 0
+	for i := 0; i <= idx; i++ {
+		if i > 0 {
+			shortEMA = bars[i].Close*shortAlpha + shortEMA*(1-shortAlpha)
+			longEMA = bars[i].Close*longAlpha + longEMA*(1-longAlpha)
+		}
+		dif = shortEMA - longEMA
+		if i == 0 {
+			dea = dif
 		} else {
-			emaVal = bars[i].Close*alpha + emaVal*(1-alpha)
+			dea = dif*signalAlpha + dea*(1-signalAlpha)
 		}
 	}
-	return emaVal
+
+	hist = (dif - dea) * 2
+	return
 }

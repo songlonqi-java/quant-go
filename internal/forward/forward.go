@@ -14,36 +14,10 @@ import (
 	"quant/internal/data"
 	"quant/internal/market"
 	"quant/internal/signal"
+	"quant/internal/strategy"
 )
 
 const picksFile = "picks.csv"
-
-var headers = []string{
-	"signal_date", "target_date", "horizon", "rank", "code", "name", "close",
-	"buy_signals", "sell_signals", "total_score", "confidence", "position_pct",
-	"key_strategies", "market_status", "position_advice", "entry_plan", "invalid_condition",
-	"next_open", "next_close", "next_return_pct",
-	"day3_close", "day3_return_pct", "day5_close", "day5_return_pct",
-	"status", "notes",
-}
-
-var previousHeaders = []string{
-	"signal_date", "target_date", "rank", "code", "name", "close",
-	"buy_signals", "sell_signals", "total_score", "confidence", "position_pct",
-	"key_strategies", "market_status", "position_advice", "entry_plan", "invalid_condition",
-	"next_open", "next_close", "next_return_pct",
-	"day3_close", "day3_return_pct", "day5_close", "day5_return_pct",
-	"status", "notes",
-}
-
-var legacyHeaders = []string{
-	"signal_date", "target_date", "rank", "code", "name", "close",
-	"buy_signals", "sell_signals", "total_score", "key_strategies",
-	"market_status", "position_advice", "entry_plan", "invalid_condition",
-	"next_open", "next_close", "next_return_pct",
-	"day3_close", "day3_return_pct", "day5_close", "day5_return_pct",
-	"status", "notes",
-}
 
 func Record(dir string, results []signal.SignalResult, marketStatus *market.MarketStatus, limit int, tradingDates []string) error {
 	return RecordWithDecision(dir, results, marketStatus, limit, tradingDates, signal.PositionDecision{})
@@ -53,13 +27,16 @@ func RecordWithDecision(dir string, results []signal.SignalResult, marketStatus 
 	if limit <= 0 {
 		limit = 5
 	}
-	var picks []signal.SignalResult
+	picks := make([]signal.SignalResult, 0, limit*3)
+	counts := make(map[strategy.Horizon]int)
 	for _, r := range results {
 		if r.Recommendation() == "买入" {
+			h := r.Horizon
+			if counts[h] >= limit {
+				continue
+			}
 			picks = append(picks, r)
-		}
-		if len(picks) >= limit {
-			break
+			counts[h]++
 		}
 	}
 	if len(picks) == 0 {
@@ -272,27 +249,31 @@ func Validate(dir string, barsMap map[string][]data.DailyBar) (int, error) {
 		if isNoTradeStatus(row["status"]) {
 			continue
 		}
-		if targetIdx+2 < len(bars) && row["day3_close"] == "" {
-			open := parseFloat(row["next_open"])
-			close := bars[targetIdx+2].TradeClose()
-			row["day3_close"] = fmt.Sprintf("%.2f", close)
-			row["day3_return_pct"] = fmt.Sprintf("%.2f", returnPct(open, close))
-			row["status"] = "validated_3d"
-			updated++
-		}
-		if targetIdx+4 < len(bars) && row["day5_close"] == "" {
-			open := parseFloat(row["next_open"])
-			close := bars[targetIdx+4].TradeClose()
-			row["day5_close"] = fmt.Sprintf("%.2f", close)
-			row["day5_return_pct"] = fmt.Sprintf("%.2f", returnPct(open, close))
-			row["status"] = "validated_5d"
-			updated++
-		}
+		updated += validateHorizonReturns(row, bars, targetIdx)
 	}
 	if updated == 0 {
 		return 0, nil
 	}
 	return updated, writeRows(path, rows)
+}
+
+func validateHorizonReturns(row map[string]string, bars []data.DailyBar, targetIdx int) int {
+	open := parseFloat(row["next_open"])
+	if open <= 0 {
+		return 0
+	}
+	updated := 0
+	for _, target := range validationTargets(row["horizon"]) {
+		if targetIdx+target.offset >= len(bars) || row[target.closeField] != "" {
+			continue
+		}
+		close := bars[targetIdx+target.offset].TradeClose()
+		row[target.closeField] = fmt.Sprintf("%.2f", close)
+		row[target.returnField] = fmt.Sprintf("%.2f", returnPct(open, close))
+		row["status"] = "validated_" + target.label
+		updated++
+	}
+	return updated
 }
 
 func readRows(path string) ([]map[string]string, error) {

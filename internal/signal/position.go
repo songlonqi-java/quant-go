@@ -142,7 +142,7 @@ func qualifyingBuyIssues(r SignalResult) []string {
 	}
 	for _, label := range append(append([]string{}, r.RiskLabels...), r.IntradayLabels...) {
 		switch label {
-		case "涨停风险", "跌停风险", "高开>3%", "涨幅偏高", "盘中走弱", "资金背离":
+		case "涨停风险", "跌停风险", "高开>3%", "涨幅偏高", "盘中走弱", "资金背离", "亏钱效应", "跌停扩散", "涨停退潮":
 			issues = append(issues, label)
 		}
 	}

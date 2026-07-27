@@ -151,6 +151,86 @@ func TestRecordWithDecisionWritesCashRow(t *testing.T) {
 	}
 }
 
+func TestRecordWithDecisionKeepsLimitPerHorizon(t *testing.T) {
+	dir := t.TempDir()
+	results := []signal.SignalResult{
+		forwardResult(strategy.HorizonShort, "000001.SZ"),
+		forwardResult(strategy.HorizonShort, "000002.SZ"),
+		forwardResult(strategy.HorizonMid, "000003.SZ"),
+		forwardResult(strategy.HorizonMid, "000004.SZ"),
+		forwardResult(strategy.HorizonLong, "000005.SZ"),
+		forwardResult(strategy.HorizonLong, "000006.SZ"),
+	}
+
+	err := RecordWithDecision(dir, results, &market.MarketStatus{Sentiment: "偏多"}, 1, []string{"20260101", "20260102"}, signal.PositionDecision{})
+	if err != nil {
+		t.Fatalf("RecordWithDecision() error = %v", err)
+	}
+
+	rows, err := readRows(filepath.Join(dir, picksFile))
+	if err != nil {
+		t.Fatalf("readRows() error = %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("len(rows) = %d, want 3", len(rows))
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		seen[row["horizon"]] = true
+	}
+	for _, horizon := range []strategy.Horizon{strategy.HorizonShort, strategy.HorizonMid, strategy.HorizonLong} {
+		if !seen[string(horizon)] {
+			t.Fatalf("missing horizon %s in rows=%v", horizon, rows)
+		}
+	}
+}
+
+func TestValidateUsesMidHorizonTargets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, picksFile)
+	if err := writeRows(path, []map[string]string{
+		{
+			"signal_date": "20260101",
+			"target_date": "20260102",
+			"horizon":     string(strategy.HorizonMid),
+			"rank":        "1",
+			"code":        "000001.SZ",
+			"name":        "平安银行",
+			"close":       "10.00",
+			"status":      "pending",
+		},
+	}); err != nil {
+		t.Fatalf("writeRows() error = %v", err)
+	}
+
+	var bars []data.DailyBar
+	for i := 0; i < 45; i++ {
+		bars = append(bars, forwardBarDateOffset(i, 10+float64(i)*0.1))
+	}
+
+	updated, err := Validate(dir, map[string][]data.DailyBar{"000001.SZ": bars})
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if updated != 4 {
+		t.Fatalf("updated = %d, want 4", updated)
+	}
+	rows, err := readRows(path)
+	if err != nil {
+		t.Fatalf("readRows() error = %v", err)
+	}
+	row := rows[0]
+	if row["day3_close"] != "" || row["day5_close"] != "" {
+		t.Fatalf("mid horizon should not fill short fields: row=%v", row)
+	}
+	if row["day10_close"] == "" || row["day20_close"] == "" || row["day40_close"] == "" {
+		t.Fatalf("mid horizon fields not filled: row=%v", row)
+	}
+	if row["status"] != "validated_40d" {
+		t.Fatalf("status = %q, want validated_40d", row["status"])
+	}
+}
+
 func forwardBar(date string, open, high, low, close float64) data.DailyBar {
 	return data.DailyBar{
 		TsCode:    "000001.SZ",
@@ -166,4 +246,30 @@ func forwardBar(date string, open, high, low, close float64) data.DailyBar {
 		RawClose:  close,
 		AdjFactor: 1,
 	}
+}
+
+func forwardResult(h strategy.Horizon, code string) signal.SignalResult {
+	return signal.SignalResult{
+		Horizon:     h,
+		Code:        code,
+		Name:        code,
+		Date:        "20260101",
+		BuyCount:    3,
+		TotalScore:  3,
+		Confidence:  80,
+		PositionPct: 5,
+	}
+}
+
+func forwardBarDateOffset(offset int, close float64) data.DailyBar {
+	day := 1 + offset
+	date := "202601" + twoDigit(day)
+	return forwardBar(date, close, close+0.2, close-0.2, close)
+}
+
+func twoDigit(n int) string {
+	if n < 10 {
+		return "0" + string(rune('0'+n))
+	}
+	return string(rune('0'+n/10)) + string(rune('0'+n%10))
 }

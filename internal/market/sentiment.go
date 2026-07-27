@@ -12,17 +12,25 @@ import (
 )
 
 type MarketStatus struct {
-	IndexCode     string
-	IndexClose    float64
-	IndexChg      float64
-	MATrend       string
-	Breadth       float64
-	UpCount       int
-	DownCount     int
-	StrongSectors []string
-	WeakSectors   []string
-	Sentiment     string
-	Advice        string
+	IndexCode      string
+	IndexClose     float64
+	IndexChg       float64
+	MATrend        string
+	Breadth        float64
+	UpCount        int
+	DownCount      int
+	RisingCount    int
+	FallingCount   int
+	FlatCount      int
+	LimitUpCount   int
+	LimitDownCount int
+	TurnoverAmount float64
+	ProfitEffect   float64
+	StrongSectors  []string
+	WeakSectors    []string
+	RiskFlags      []string
+	Sentiment      string
+	Advice         string
 }
 
 var stockIndustryMap map[string]string
@@ -65,10 +73,62 @@ func Analyze(bars []data.DailyBar) *MarketStatus {
 
 	ms.analyzeIndex(codeMap)
 	ms.analyzeBreadth(codeMap)
+	ms.analyzeTradingStats(codeMap)
 	ms.analyzeSectors(codeMap)
 	ms.determineSentiment()
 
 	return ms
+}
+
+func (ms *MarketStatus) analyzeTradingStats(codeMap map[string][]data.DailyBar) {
+	total := 0
+	var amount float64
+	for code, bars := range codeMap {
+		if len(bars) < 2 {
+			continue
+		}
+		sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
+		last := len(bars) - 1
+		cur := bars[last]
+		prev := bars[last-1]
+		closePrice := cur.TradeClose()
+		prevClose := prev.TradeClose()
+		if prevClose <= 0 || closePrice <= 0 {
+			continue
+		}
+		total++
+		switch {
+		case closePrice > prevClose:
+			ms.RisingCount++
+		case closePrice < prevClose:
+			ms.FallingCount++
+		default:
+			ms.FlatCount++
+		}
+		if isLimitUpClose(code, cur, prevClose) {
+			ms.LimitUpCount++
+		}
+		if isLimitDownClose(code, cur, prevClose) {
+			ms.LimitDownCount++
+		}
+		amount += cur.Amount
+	}
+	if total > 0 {
+		ms.ProfitEffect = float64(ms.RisingCount) / float64(total) * 100
+	}
+	ms.TurnoverAmount = amount
+
+	if total >= 20 {
+		if ms.ProfitEffect <= 30 {
+			ms.RiskFlags = append(ms.RiskFlags, "亏钱效应")
+		}
+		if ms.LimitDownCount >= 10 && ms.LimitDownCount > ms.LimitUpCount {
+			ms.RiskFlags = append(ms.RiskFlags, "跌停扩散")
+		}
+		if ms.LimitUpCount <= 5 && ms.ProfitEffect < 45 {
+			ms.RiskFlags = append(ms.RiskFlags, "涨停退潮")
+		}
+	}
 }
 
 func (ms *MarketStatus) analyzeIndex(codeMap map[string][]data.DailyBar) {
@@ -263,8 +323,8 @@ func (ms *MarketStatus) analyzeSectors(codeMap map[string][]data.DailyBar) {
 	industries := loadIndustries()
 
 	type perf struct {
-		chg  float64
-		cnt  int
+		chg float64
+		cnt int
 	}
 	sectorPerf := make(map[string]*perf)
 
@@ -349,6 +409,26 @@ func (ms *MarketStatus) determineSentiment() {
 		score--
 	}
 
+	if ms.ProfitEffect >= 65 {
+		score++
+	} else if ms.ProfitEffect > 0 && ms.ProfitEffect <= 25 {
+		score -= 2
+	} else if ms.ProfitEffect > 0 && ms.ProfitEffect <= 35 {
+		score--
+	}
+	if ms.LimitUpCount >= 30 && ms.LimitUpCount > ms.LimitDownCount*2 {
+		score++
+	}
+	if ms.LimitDownCount >= 10 && ms.LimitDownCount > ms.LimitUpCount {
+		score--
+	}
+	if ms.LimitDownCount >= 20 && ms.LimitDownCount > ms.LimitUpCount*2 {
+		score--
+	}
+	if contains(ms.RiskFlags, "跌停扩散") {
+		score--
+	}
+
 	switch {
 	case score >= 4:
 		ms.Sentiment = "强烈看多"
@@ -376,11 +456,21 @@ func (ms *MarketStatus) Print() {
 	fmt.Printf("全市场指数: %.2f  (%.2f%%)\n", ms.IndexClose, ms.IndexChg)
 	fmt.Printf("均线趋势: %s\n", ms.MATrend)
 	fmt.Printf("市场宽度: %.0f%% (MA20上方 %d/%d)\n", ms.Breadth, ms.UpCount, ms.UpCount+ms.DownCount)
+	if ms.RisingCount+ms.FallingCount+ms.FlatCount > 0 {
+		fmt.Printf("赚钱效应: %.0f%% (涨%d/跌%d/平%d), 涨停%d/跌停%d\n",
+			ms.ProfitEffect, ms.RisingCount, ms.FallingCount, ms.FlatCount, ms.LimitUpCount, ms.LimitDownCount)
+	}
+	if ms.TurnoverAmount > 0 {
+		fmt.Printf("成交额: %.0f亿\n", ms.TurnoverAmount/100000)
+	}
 	if len(ms.StrongSectors) > 0 {
 		fmt.Printf("强势板块: %s\n", strings.Join(ms.StrongSectors, " / "))
 	}
 	if len(ms.WeakSectors) > 0 {
 		fmt.Printf("弱势板块: %s\n", strings.Join(ms.WeakSectors, " / "))
+	}
+	if len(ms.RiskFlags) > 0 {
+		fmt.Printf("A股风险: %s\n", strings.Join(ms.RiskFlags, " / "))
 	}
 	fmt.Printf("市场情绪: %s\n", ms.Sentiment)
 	fmt.Printf("仓位建议: %s\n", ms.Advice)
@@ -410,4 +500,40 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func isLimitUpClose(code string, cur data.DailyBar, prevClose float64) bool {
+	if cur.IsLimitUpClose() {
+		return true
+	}
+	return cur.TradeClose() >= prevClose*(1+defaultLimitPct(code))*0.999
+}
+
+func isLimitDownClose(code string, cur data.DailyBar, prevClose float64) bool {
+	if cur.IsLimitDownClose() {
+		return true
+	}
+	return cur.TradeClose() <= prevClose*(1-defaultLimitPct(code))*1.001
+}
+
+func defaultLimitPct(code string) float64 {
+	code = strings.ToUpper(code)
+	switch {
+	case strings.HasSuffix(code, ".BJ"):
+		return 0.30
+	case strings.HasPrefix(code, "300") || strings.HasPrefix(code, "301") ||
+		strings.HasPrefix(code, "688") || strings.HasPrefix(code, "689"):
+		return 0.20
+	default:
+		return 0.10
+	}
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

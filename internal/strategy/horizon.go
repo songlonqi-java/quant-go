@@ -13,14 +13,7 @@ func HorizonOrder() []Horizon {
 }
 
 func HorizonForStrategy(name string) Horizon {
-	switch name {
-	case "limit_up", "sar", "kdj", "roc", "williams_r", "rsi", "mfi", "bull_flag", "bollinger", "donchian", "volume_breakout", "bottom_reversal":
-		return HorizonShort
-	case "dividend_deviation":
-		return HorizonLong
-	default:
-		return HorizonMid
-	}
+	return MetadataForStrategy(name).Horizon
 }
 
 func HorizonLabel(h Horizon) string {

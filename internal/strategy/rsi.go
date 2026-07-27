@@ -3,9 +3,9 @@ package strategy
 import "quant/internal/data"
 
 type RSI struct {
-	Period      int
-	Oversold    float64
-	Overbought  float64
+	Period     int
+	Oversold   float64
+	Overbought float64
 }
 
 func NewRSI(period int, oversold, overbought float64) *RSI {
@@ -46,7 +46,7 @@ func rsiValue(bars []data.DailyBar, idx, period int) float64 {
 	}
 
 	var avgGain, avgLoss float64
-	for i := idx - period + 1; i <= idx; i++ {
+	for i := 1; i <= period; i++ {
 		chg := bars[i].Close - bars[i-1].Close
 		if chg > 0 {
 			avgGain += chg
@@ -57,7 +57,23 @@ func rsiValue(bars []data.DailyBar, idx, period int) float64 {
 	avgGain /= float64(period)
 	avgLoss /= float64(period)
 
+	for i := period + 1; i <= idx; i++ {
+		chg := bars[i].Close - bars[i-1].Close
+		gain := 0.0
+		loss := 0.0
+		if chg > 0 {
+			gain = chg
+		} else {
+			loss = -chg
+		}
+		avgGain = (avgGain*float64(period-1) + gain) / float64(period)
+		avgLoss = (avgLoss*float64(period-1) + loss) / float64(period)
+	}
+
 	if avgLoss == 0 {
+		if avgGain == 0 {
+			return 50
+		}
 		return 100
 	}
 	rs := avgGain / avgLoss

@@ -48,7 +48,7 @@ func (d *DividendDeviation) Signal(bars []data.DailyBar, idx int) SignalType {
 	if buySig && d.fundStore != nil {
 		code := bars[idx].TsCode
 		dv := d.fundStore.GetDailyBasicAsOf(code, bars[idx].TradeDate)
-		if dv != nil && dv.DvRatio > 0 && dv.DvRatio < 15 {
+		if dv != nil && !isSensibleHighDividend(dividendYield(dv)) {
 			return Hold
 		}
 	}
@@ -74,11 +74,25 @@ func (d *DividendDeviation) Score(bars []data.DailyBar, idx int) float64 {
 
 	if d.fundStore != nil {
 		code := bars[idx].TsCode
-		if dv := d.fundStore.GetDailyBasicAsOf(code, bars[idx].TradeDate); dv != nil && dv.DvRatio > 3 {
+		if dv := d.fundStore.GetDailyBasicAsOf(code, bars[idx].TradeDate); dv != nil && isSensibleHighDividend(dividendYield(dv)) {
 			score += 10
 		}
 	}
 	return score
+}
+
+func dividendYield(dv *data.DailyBasic) float64 {
+	if dv == nil {
+		return 0
+	}
+	if dv.DvTTM > 0 {
+		return dv.DvTTM
+	}
+	return dv.DvRatio
+}
+
+func isSensibleHighDividend(yield float64) bool {
+	return yield >= 3 && yield <= 15
 }
 
 func hasLongUpperShadow(bar data.DailyBar) bool {
