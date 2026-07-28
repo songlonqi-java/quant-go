@@ -6,24 +6,28 @@ import (
 )
 
 type PerformanceMetrics struct {
-	TotalReturn       float64
-	AnnualizedReturn  float64
-	SharpeRatio       float64
-	MaxDrawdown       float64
-	WinRate           float64
-	ProfitFactor      float64
-	TotalTrades       int
-	WinningTrades     int
-	LosingTrades      int
-	AvgWin            float64
-	AvgLoss           float64
-	CalmarRatio       float64
-	Volatility        float64
-	FinalEquity       float64
-	InitialCapital    float64
+	TotalReturn      float64
+	AnnualizedReturn float64
+	SharpeRatio      float64
+	MaxDrawdown      float64
+	WinRate          float64
+	ProfitFactor     float64
+	TotalTrades      int
+	WinningTrades    int
+	LosingTrades     int
+	AvgWin           float64
+	AvgLoss          float64
+	CalmarRatio      float64
+	Volatility       float64
+	FinalEquity      float64
+	InitialCapital   float64
 }
 
 func CalculateMetrics(result *Result, initialCapital float64, riskFreeRate float64, tradingDays int) PerformanceMetrics {
+	if tradingDays <= 0 {
+		tradingDays = 252
+	}
+
 	m := PerformanceMetrics{
 		InitialCapital: initialCapital,
 		FinalEquity:    result.FinalEquity,

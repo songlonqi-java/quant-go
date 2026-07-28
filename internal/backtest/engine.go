@@ -1,6 +1,8 @@
 package backtest
 
 import (
+	"math"
+
 	"quant/internal/data"
 	"quant/internal/strategy"
 )
@@ -25,6 +27,7 @@ type Config struct {
 	Commission     float64
 	Slippage       float64
 	LimitPct       float64
+	LotSize        float64
 }
 
 func DefaultConfig() Config {
@@ -33,6 +36,7 @@ func DefaultConfig() Config {
 		Commission:     0.0003,
 		Slippage:       0.0001,
 		LimitPct:       0.095,
+		LotSize:        100,
 	}
 }
 
@@ -50,6 +54,9 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) stra
 	}
 	if cfg.LimitPct <= 0 {
 		cfg.LimitPct = DefaultConfig().LimitPct
+	}
+	if cfg.LotSize <= 0 {
+		cfg.LotSize = DefaultConfig().LotSize
 	}
 
 	cash := cfg.InitialCapital
@@ -73,20 +80,27 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) stra
 					execPrice := bars[i].TradeOpen() * (1 + cfg.Slippage)
 					available := cash
 					if available > 0 && execPrice > 0 {
-						shares = available / (execPrice * (1 + cfg.Commission))
-						cost := shares * execPrice * cfg.Commission
-						cash = cash - shares*execPrice - cost
-						holding = true
-						tradeCount++
-						trades = append(trades, Trade{
-							Date:       bars[i].TradeDate,
-							SignalDate: pendingSignalDate,
-							Action:     "BUY",
-							Price:      execPrice,
-							Shares:     shares,
-							Cash:       cash,
-							Total:      cash + shares*closePrice,
-						})
+						buyShares := affordableLotShares(available, execPrice, cfg.Commission, cfg.LotSize)
+						if buyShares > 0 {
+							shares = buyShares
+							cost := shares * execPrice * cfg.Commission
+							cash = cash - shares*execPrice - cost
+							holding = true
+							tradeCount++
+							trades = append(trades, Trade{
+								Date:       bars[i].TradeDate,
+								SignalDate: pendingSignalDate,
+								Action:     "BUY",
+								Price:      execPrice,
+								Shares:     shares,
+								Cash:       cash,
+								Total:      cash + shares*closePrice,
+							})
+						} else {
+							skippedSignals++
+						}
+					} else {
+						skippedSignals++
 					}
 				} else if !holding {
 					skippedSignals++
@@ -131,6 +145,17 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) stra
 		TradeCount:     tradeCount,
 		SkippedSignals: skippedSignals,
 	}
+}
+
+func affordableLotShares(available, execPrice, commission, lotSize float64) float64 {
+	if available <= 0 || execPrice <= 0 || lotSize <= 0 {
+		return 0
+	}
+	maxShares := available / (execPrice * (1 + commission))
+	if maxShares <= 0 {
+		return 0
+	}
+	return math.Floor(maxShares/lotSize) * lotSize
 }
 
 func canBuyAtOpen(prev, cur data.DailyBar, limitPct float64) bool {

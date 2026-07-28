@@ -1,10 +1,12 @@
 package signal
 
 import (
+	"math"
 	"testing"
 
 	"quant/internal/data"
 	"quant/internal/market"
+	"quant/internal/sector"
 	"quant/internal/strategy"
 )
 
@@ -221,6 +223,53 @@ func TestApplyPositionPolicyAllowsBearishProbeWithMoneyflowConfirmation(t *testi
 	}
 	if !containsString(results[0].RiskLabels, "轻仓试错") {
 		t.Fatalf("RiskLabels = %v, want 轻仓试错", results[0].RiskLabels)
+	}
+}
+
+func TestBoundedContributionTreatsNonFiniteScoreAsNeutral(t *testing.T) {
+	for _, score := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got := boundedContribution(score); got != 1 {
+			t.Fatalf("boundedContribution(%v) = %.2f, want 1.00", score, got)
+		}
+	}
+}
+
+func TestApplySectorContextAddsSectorLabels(t *testing.T) {
+	results := []SignalResult{
+		{
+			Horizon:    strategy.HorizonShort,
+			Code:       "000001.SZ",
+			Date:       "20260121",
+			BuyCount:   3,
+			TotalScore: 2.5,
+		},
+	}
+	memberships := sector.NewIndustryMemberships([]data.StockInfo{
+		{TsCode: "000001.SZ", Industry: "科技", ListDate: "20250101"},
+	})
+	report := sector.NewReport([]data.SectorDaily{
+		{
+			TradeDate:  "20260121",
+			SectorType: sector.TypeIndustry,
+			SectorCode: "科技",
+			SectorName: "科技",
+			Chg1:       2.3,
+			Tags:       "板块放量,赚钱效应扩散,资金确认",
+		},
+	})
+
+	ApplySectorContext(results, report, memberships)
+
+	if results[0].SectorName != "科技" {
+		t.Fatalf("SectorName = %q, want 科技", results[0].SectorName)
+	}
+	if results[0].SectorChg1 != 2.3 {
+		t.Fatalf("SectorChg1 = %.1f, want 2.3", results[0].SectorChg1)
+	}
+	for _, label := range []string{"板块共振", "板块资金确认"} {
+		if !containsString(results[0].RiskLabels, label) {
+			t.Fatalf("RiskLabels = %v, want %s", results[0].RiskLabels, label)
+		}
 	}
 }
 

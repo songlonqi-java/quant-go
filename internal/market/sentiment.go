@@ -409,12 +409,14 @@ func (ms *MarketStatus) determineSentiment() {
 		score--
 	}
 
-	if ms.ProfitEffect >= 65 {
-		score++
-	} else if ms.ProfitEffect > 0 && ms.ProfitEffect <= 25 {
-		score -= 2
-	} else if ms.ProfitEffect > 0 && ms.ProfitEffect <= 35 {
-		score--
+	if ms.RisingCount+ms.FallingCount+ms.FlatCount > 0 {
+		if ms.ProfitEffect >= 65 {
+			score++
+		} else if ms.ProfitEffect <= 25 {
+			score -= 2
+		} else if ms.ProfitEffect <= 35 {
+			score--
+		}
 	}
 	if ms.LimitUpCount >= 30 && ms.LimitUpCount > ms.LimitDownCount*2 {
 		score++

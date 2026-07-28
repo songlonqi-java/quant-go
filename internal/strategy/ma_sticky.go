@@ -33,8 +33,9 @@ func (m *MASticky) Signal(bars []data.DailyBar, idx int) SignalType {
 	prevMa5 := sma(bars, idx-1, 5)
 	prevMa10 := sma(bars, idx-1, 10)
 	prevMa20 := sma(bars, idx-1, 20)
+	prevMa60 := sma(bars, idx-1, 60)
 
-	if ma5 <= 0 || ma60 <= 0 {
+	if ma5 <= 0 || ma10 <= 0 || ma20 <= 0 || ma60 <= 0 {
 		return Hold
 	}
 
@@ -51,10 +52,10 @@ func (m *MASticky) Signal(bars []data.DailyBar, idx int) SignalType {
 	brokeUp := curPrice > maxMA && bars[idx-1].Close <= maxMA
 
 	prevConverged := false
-	if idx > 1 {
-		prevMax := math.Max(prevMa5, math.Max(prevMa10, math.Max(prevMa20, ma60)))
-		prevMin := math.Min(prevMa5, math.Min(prevMa10, math.Min(prevMa20, ma60)))
-		prevSpread := (prevMax - prevMin) / ma60 * 100
+	if prevMa5 > 0 && prevMa10 > 0 && prevMa20 > 0 && prevMa60 > 0 {
+		prevMax := math.Max(prevMa5, math.Max(prevMa10, math.Max(prevMa20, prevMa60)))
+		prevMin := math.Min(prevMa5, math.Min(prevMa10, math.Min(prevMa20, prevMa60)))
+		prevSpread := (prevMax - prevMin) / prevMa60 * 100
 		prevConverged = prevSpread < m.ConvergeThreshold
 	}
 
@@ -77,9 +78,12 @@ func (m *MASticky) Score(bars []data.DailyBar, idx int) float64 {
 	ma5 := sma(bars, idx, 5)
 	ma20 := sma(bars, idx, 20)
 	ma60 := sma(bars, idx, 60)
-	if ma60 <= 0 {
+	if ma5 <= 0 || ma20 <= 0 || ma60 <= 0 {
 		return 0
 	}
 	spread := (math.Max(ma5, ma20) - math.Min(ma5, ma20)) / ma60 * 100
+	if spread <= 0 {
+		return 0
+	}
 	return (1/spread - 0.5) * 10
 }

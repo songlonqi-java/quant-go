@@ -36,6 +36,9 @@ func (m *MACD) Score(bars []data.DailyBar, idx int) float64 {
 	if idx < m.Warmup() {
 		return 0
 	}
+	if bars[idx].Close <= 0 {
+		return 0
+	}
 	_, _, hist := m.macdAt(bars, idx)
 	return hist / bars[idx].Close * 100
 }

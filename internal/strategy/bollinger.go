@@ -6,8 +6,8 @@ import (
 )
 
 type Bollinger struct {
-	Period      int
-	Multiplier  float64
+	Period     int
+	Multiplier float64
 }
 
 func NewBollinger(period int, multiplier float64) *Bollinger {
@@ -22,8 +22,8 @@ func (b *Bollinger) Signal(bars []data.DailyBar, idx int) SignalType {
 		return Hold
 	}
 
-	_, lowerCur, _, _ := b.bandsAt(bars, idx)
-	_, lowerPrev, _, _ := b.bandsAt(bars, idx-1)
+	_, lowerCur, upperCur, _ := b.bandsAt(bars, idx)
+	_, lowerPrev, upperPrev, _ := b.bandsAt(bars, idx-1)
 
 	curPrice := bars[idx].Close
 	prevPrice := bars[idx-1].Close
@@ -32,8 +32,7 @@ func (b *Bollinger) Signal(bars []data.DailyBar, idx int) SignalType {
 		return Buy
 	}
 
-	_, _, upperCur, _ := b.bandsAt(bars, idx)
-	if prevPrice >= upperCur && curPrice < upperCur {
+	if prevPrice >= upperPrev && curPrice < upperCur {
 		return Sell
 	}
 	return Hold

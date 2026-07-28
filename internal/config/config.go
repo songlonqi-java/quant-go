@@ -41,6 +41,7 @@ type BacktestConfig struct {
 	Commission     float64 `yaml:"commission"`
 	Slippage       float64 `yaml:"slippage"`
 	RiskFreeRate   float64 `yaml:"risk_free_rate"`
+	LotSize        float64 `yaml:"lot_size"`
 }
 
 type SignalConfig struct {
@@ -70,6 +71,7 @@ var defaultConfig = Config{
 		Commission:     0.0003,
 		Slippage:       0.0001,
 		RiskFreeRate:   0.03,
+		LotSize:        100,
 	},
 	Signal: SignalConfig{
 		DefaultStrategies: []string{

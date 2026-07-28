@@ -65,9 +65,13 @@ func (a *ATRBreakout) Score(bars []data.DailyBar, idx int) float64 {
 	if atr <= 0 || avgVol <= 0 || bars[idx].Close <= 0 {
 		return 0
 	}
+	prevHigh := highestHigh(bars, idx-1, a.BreakoutPeriod)
+	if prevHigh <= 0 {
+		return 0
+	}
 	atrScore := math.Max(0, a.MaxATRPct-atr/bars[idx].Close*100)
 	volScore := bars[idx].Vol / avgVol
-	breakScore := (bars[idx].Close/highestHigh(bars, idx-1, a.BreakoutPeriod) - 1) * 100
+	breakScore := (bars[idx].Close/prevHigh - 1) * 100
 	return atrScore + volScore*3 + breakScore
 }
 

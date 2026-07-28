@@ -8,6 +8,7 @@ import (
 
 	"quant/internal/data"
 	"quant/internal/market"
+	"quant/internal/sector"
 	"quant/internal/strategy"
 )
 
@@ -28,6 +29,9 @@ type SignalResult struct {
 	HasMoneyflow            bool
 	MoneyflowNetAmount      float64
 	LargeMoneyflowNetAmount float64
+	SectorName              string
+	SectorTags              []string
+	SectorChg1              float64
 	HasRealtime             bool
 	RealtimePrice           float64
 	RealtimeChangePct       float64
@@ -300,6 +304,9 @@ func groupCap(group string) float64 {
 }
 
 func boundedContribution(score float64) float64 {
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return 1
+	}
 	score = math.Max(-30, math.Min(30, score))
 	contribution := 1 + score*0.01
 	if contribution < 0.5 {
@@ -448,6 +455,45 @@ func applyMoneyflowContext(r *SignalResult, moneyflowStore *data.MoneyflowStore)
 		if net < 0 || large < 0 {
 			r.RiskLabels = append(r.RiskLabels, "资金流出")
 			r.Reasons = append(r.Reasons, fmt.Sprintf("资金净额%+.0f万，大单净额%+.0f万", net, large))
+		}
+	}
+}
+
+func ApplySectorContext(results []SignalResult, report *sector.Report, memberships sector.MembershipStore) {
+	if report == nil || memberships.Len() == 0 {
+		return
+	}
+	for i := range results {
+		membership, ok := memberships.PrimaryIndustry(results[i].Code, results[i].Date)
+		if !ok {
+			continue
+		}
+		row, ok := report.Find(membership.SectorType, membership.SectorCode)
+		if !ok {
+			continue
+		}
+		results[i].SectorName = row.SectorName
+		results[i].SectorTags = sector.SplitTags(row.Tags)
+		results[i].SectorChg1 = row.Chg1
+		switch rawRecommendation(results[i]) {
+		case "买入":
+			if sector.HasTag(row, "板块放量") || sector.HasTag(row, "赚钱效应扩散") || sector.HasTag(row, "涨停扩散") || sector.HasTag(row, "强势延续") {
+				addUnique(&results[i].RiskLabels, "板块共振")
+				results[i].Reasons = append(results[i].Reasons, fmt.Sprintf("%s板块%+.1f%%，%s", row.SectorName, row.Chg1, row.Tags))
+			}
+			if sector.HasTag(row, "资金确认") {
+				addUnique(&results[i].RiskLabels, "板块资金确认")
+			}
+			if sector.HasTag(row, "资金背离") {
+				addUnique(&results[i].RiskLabels, "板块资金背离")
+			}
+			if sector.HasTag(row, "高位退潮") {
+				addUnique(&results[i].RiskLabels, "板块退潮")
+			}
+		case "卖出":
+			if sector.HasTag(row, "高位退潮") || sector.HasTag(row, "资金背离") {
+				addUnique(&results[i].RiskLabels, "板块风险")
+			}
 		}
 	}
 }

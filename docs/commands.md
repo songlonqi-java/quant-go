@@ -29,6 +29,21 @@
 
 ---
 
+## `go-quant sector build` — 板块日度聚合
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `(无)` | 构建最新本地交易日 | `./go-quant sector build` |
+| `--today` | 构建最新本地交易日，适合日终流程 | `./go-quant sector build --today` |
+| `--date YYYYMMDD` | 重算某一天 | `./go-quant sector build --date 20260727` |
+| `--start/--end` | 补算日期范围 | `./go-quant sector build --start 20260701 --end 20260727` |
+
+当前第一阶段使用 `stocks.parquet` 的行业字段做行业板块聚合，输出到 `data/raw/sector_daily/YYYY.parquet`。同一天同一板块会覆盖写入，支持重复运行。
+
+聚合字段包括涨跌幅、上涨家数占比、MA20 上方占比、涨跌停数量、成交额放大倍数、资金净流入、大单净流入、领涨股和异动标签。常见标签包括 `板块放量`、`赚钱效应扩散`、`涨停扩散`、`资金确认`、`资金背离`、`强势延续`、`高位退潮`、`孤立龙头`。
+
+---
+
 ## `go-quant signal` — 交易信号
 
 | 参数 | 说明 | 示例 |

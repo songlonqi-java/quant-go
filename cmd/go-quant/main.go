@@ -15,6 +15,7 @@ import (
 	"quant/internal/dataset"
 	"quant/internal/forward"
 	"quant/internal/portfolio"
+	"quant/internal/sector"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 	signalworkflow "quant/internal/workflow/signal"
@@ -36,6 +37,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "config.yaml", "配置文件路径")
 
 	rootCmd.AddCommand(fetchCmd())
+	rootCmd.AddCommand(sectorCmd())
 	rootCmd.AddCommand(backtestCmd())
 	rootCmd.AddCommand(signalCmd())
 	rootCmd.AddCommand(forwardCmd())
@@ -46,6 +48,66 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func sectorCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sector",
+		Short: "构建和查看板块数据",
+	}
+
+	var (
+		today     bool
+		date      string
+		startDate string
+		endDate   string
+	)
+	buildCmd := &cobra.Command{
+		Use:   "build",
+		Short: "聚合并持久化行业板块日度数据",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+
+			bars, err := data.ReadParquetDir(cfg.Data.RawDir + "/daily")
+			if err != nil {
+				return fmt.Errorf("加载日线数据失败: %w", err)
+			}
+			bars = applyStkLimitStore(data.NewFetcher(nil, cfg.Data.RawDir, nil), bars)
+			codeMap := data.GroupByCode(bars)
+			dates := resolveSectorBuildDates(bars, today, date, startDate, endDate)
+			if len(dates) == 0 {
+				return fmt.Errorf("没有可构建的交易日期")
+			}
+
+			memberships, err := sector.LoadIndustryMemberships(cfg.Data.RawDir)
+			if err != nil {
+				return fmt.Errorf("加载行业归属失败: %w", err)
+			}
+			fetcher := data.NewFetcher(nil, cfg.Data.RawDir, nil)
+			moneyflows, _ := fetcher.LoadMoneyflowStore()
+
+			rows := sector.Analyze(codeMap, memberships, moneyflows, sector.AnalyzeOptions{Dates: dates})
+			if len(rows) == 0 {
+				return fmt.Errorf("没有生成板块数据")
+			}
+			if err := sector.WriteSectorDaily(cfg.Data.RawDir, rows); err != nil {
+				return fmt.Errorf("写入板块数据失败: %w", err)
+			}
+
+			fmt.Printf(">>> 板块日度数据已写入: %d 行, 日期 %s ~ %s → %s\n",
+				len(rows), dates[0], dates[len(dates)-1], cfg.Data.RawDir+"/sector_daily")
+			report := sector.NewReport(filterSectorRowsByDate(rows, dates[len(dates)-1]))
+			report.Print()
+			return nil
+		},
+	}
+	buildCmd.Flags().BoolVar(&today, "today", false, "构建最新本地交易日板块数据")
+	buildCmd.Flags().StringVar(&date, "date", "", "构建指定日期 (YYYYMMDD)")
+	buildCmd.Flags().StringVar(&startDate, "start", "", "起始日期 (YYYYMMDD)")
+	buildCmd.Flags().StringVar(&endDate, "end", "", "结束日期 (YYYYMMDD)")
+
+	cmd.AddCommand(buildCmd)
+	return cmd
 }
 
 func loadConfig() *config.Config {
@@ -267,6 +329,7 @@ func backtestCmd() *cobra.Command {
 				InitialCapital: capital,
 				Commission:     cfg.Backtest.Commission,
 				Slippage:       cfg.Backtest.Slippage,
+				LotSize:        cfg.Backtest.LotSize,
 			}
 
 			for _, s := range selectedStrategies {
@@ -381,6 +444,11 @@ func signalCmd() *cobra.Command {
 				fmt.Printf("新闻分析: %v\n", result.NewsErr)
 			} else if result.NewsSummary != nil {
 				result.NewsSummary.Print()
+			}
+			if result.SectorErr != nil {
+				fmt.Printf("板块分析: %v\n", result.SectorErr)
+			} else if result.SectorReport != nil {
+				result.SectorReport.Print()
 			}
 			if result.RealtimeErr != nil && format == "table" {
 				fmt.Printf("实时行情: %v\n", result.RealtimeErr)
@@ -552,6 +620,40 @@ func filterByDateRange(bars []data.DailyBar, start, end string) []data.DailyBar 
 			continue
 		}
 		filtered = append(filtered, b)
+	}
+	return filtered
+}
+
+func resolveSectorBuildDates(bars []data.DailyBar, today bool, date, startDate, endDate string) []string {
+	dates := data.TradingDatesFromBars(bars)
+	if len(dates) == 0 {
+		return nil
+	}
+	if date != "" {
+		return []string{date}
+	}
+	if today || (startDate == "" && endDate == "") {
+		return []string{dates[len(dates)-1]}
+	}
+	var out []string
+	for _, d := range dates {
+		if startDate != "" && d < startDate {
+			continue
+		}
+		if endDate != "" && d > endDate {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func filterSectorRowsByDate(rows []data.SectorDaily, date string) []data.SectorDaily {
+	filtered := make([]data.SectorDaily, 0, len(rows))
+	for _, row := range rows {
+		if row.TradeDate == date {
+			filtered = append(filtered, row)
+		}
 	}
 	return filtered
 }

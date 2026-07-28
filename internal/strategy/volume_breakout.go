@@ -48,6 +48,9 @@ func (v *VolumeBreakout) Score(bars []data.DailyBar, idx int) float64 {
 	if avgVol <= 0 {
 		return 0
 	}
+	if bars[idx-1].Close <= 0 {
+		return 0
+	}
 	volRatio := bars[idx].Vol / avgVol
 	priceChg := (bars[idx].Close/bars[idx-1].Close - 1) * 100
 	return volRatio * priceChg

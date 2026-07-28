@@ -47,17 +47,16 @@ func (b *BottomReversal) Signal(bars []data.DailyBar, idx int) SignalType {
 		start = 0
 	}
 	highest := bars[start].High
-	lowest := bars[start].Low
 	for i := start; i <= idx; i++ {
 		if bars[i].High > highest {
 			highest = bars[i].High
 		}
-		if bars[i].Low < lowest {
-			lowest = bars[i].Low
-		}
 	}
-	dropFromHigh := (cur.Close/highest - 1) * 100
-	isOversold := dropFromHigh <= b.DropThreshold
+	isOversold := false
+	if highest > 0 {
+		dropFromHigh := (cur.Close/highest - 1) * 100
+		isOversold = dropFromHigh <= b.DropThreshold
+	}
 
 	// 2. 今日是否放量上涨
 	avgVol := avgVolume(bars, idx-1, b.Lookback)
@@ -65,8 +64,11 @@ func (b *BottomReversal) Signal(bars []data.DailyBar, idx int) SignalType {
 	isPriceUp := cur.Close > prev.Close
 
 	// 3. 不是连续暴跌
-	dayRange := (cur.High - cur.Low) / cur.Low * 100
-	isStableRange := dayRange < 15
+	isStableRange := false
+	if cur.Low > 0 {
+		dayRange := (cur.High - cur.Low) / cur.Low * 100
+		isStableRange = dayRange < 15
+	}
 
 	// 4. 趋势确认: MA5已拐头向上 且 价格站上MA20
 	ma5 := sma(bars, idx, 5)

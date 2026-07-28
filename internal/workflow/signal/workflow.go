@@ -2,7 +2,9 @@ package signalworkflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 
 	"quant/internal/config"
 	"quant/internal/data"
@@ -12,6 +14,7 @@ import (
 	"quant/internal/news"
 	"quant/internal/portfolio"
 	"quant/internal/realtime"
+	"quant/internal/sector"
 	signals "quant/internal/signal"
 	"quant/internal/strategy"
 )
@@ -33,12 +36,14 @@ type Result struct {
 	NewsSummary      *news.NewsSummary
 	PortfolioSummary *portfolio.Summary
 	PositionDecision signals.PositionDecision
+	SectorReport     *sector.Report
 	Signals          []signals.SignalResult
 	Watchlist        []signals.SignalResult
 	RealtimeLoaded   int
 	NewsErr          error
 	RealtimeErr      error
 	ForwardErr       error
+	SectorErr        error
 	PriceQuality     data.PriceDataQuality
 }
 
@@ -90,13 +95,22 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	result.MarketStatus = market.Analyze(ds.Bars)
 	result.NewsSummary, result.NewsErr = news.Analyze(ctx, nil, cfg.Data.RawDir, 8)
+	result.SectorReport, result.SectorErr = sector.LoadReport(cfg.Data.RawDir, ds.LatestDate)
 
-	ledger, _ := portfolio.Load(opts.PortfolioPath)
-	if ledger != nil {
-		result.PortfolioSummary = portfolio.Analyze(ledger, ds.CodeMap, ds.StockNames)
+	portfolioSummary, err := loadPortfolioSummary(opts.PortfolioPath, ds)
+	if err != nil {
+		return nil, err
 	}
+	result.PortfolioSummary = portfolioSummary
 
 	allSignals := signals.GenerateWithContextAndMoneyflow(ds.CodeMap, selectedStrategies, 0, ds.StockNames, result.MarketStatus, ds.Moneyflows)
+	if result.SectorReport != nil {
+		if memberships, err := sector.LoadIndustryMemberships(cfg.Data.RawDir); err == nil {
+			signals.ApplySectorContext(allSignals, result.SectorReport, memberships)
+		} else if result.SectorErr == nil {
+			result.SectorErr = err
+		}
+	}
 	preliminarySignals := signals.LimitByRecommendation(allSignals, topN)
 	preliminaryWatchlist := signals.SelectWatchlist(allSignals, preliminarySignals, opts.WatchN)
 
@@ -123,6 +137,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		result.ForwardErr = forward.RecordWithDecision(opts.ForwardDir, forwardSignals, result.MarketStatus, 5, ds.TradingDates, result.PositionDecision)
 	}
 	return result, nil
+}
+
+func loadPortfolioSummary(path string, ds *dataset.Dataset) (*portfolio.Summary, error) {
+	ledger, err := portfolio.Load(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("加载组合失败: %w", err)
+	}
+	return portfolio.Analyze(ledger, ds.CodeMap, ds.StockNames), nil
 }
 
 func realtimeTargets(signalsList []signals.SignalResult, watchlist []signals.SignalResult) []signals.SignalResult {

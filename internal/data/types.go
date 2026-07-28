@@ -149,6 +149,32 @@ type Moneyflow struct {
 	TradeCount    float64 `parquet:"trade_count"`
 }
 
+type SectorDaily struct {
+	TradeDate      string  `parquet:"trade_date"`
+	SectorType     string  `parquet:"sector_type"`
+	SectorCode     string  `parquet:"sector_code"`
+	SectorName     string  `parquet:"sector_name"`
+	Source         string  `parquet:"source"`
+	MemberCount    int     `parquet:"member_count"`
+	RisingCount    int     `parquet:"rising_count"`
+	FallingCount   int     `parquet:"falling_count"`
+	FlatCount      int     `parquet:"flat_count"`
+	Chg1           float64 `parquet:"chg1"`
+	Chg5           float64 `parquet:"chg5"`
+	Chg20          float64 `parquet:"chg20"`
+	Breadth        float64 `parquet:"breadth"`
+	AboveMA20Pct   float64 `parquet:"above_ma20_pct"`
+	LimitUpCount   int     `parquet:"limit_up_count"`
+	LimitDownCount int     `parquet:"limit_down_count"`
+	Amount         float64 `parquet:"amount"`
+	AmountRatio20  float64 `parquet:"amount_ratio20"`
+	NetMoneyflow   float64 `parquet:"net_moneyflow"`
+	LargeNetFlow   float64 `parquet:"large_net_flow"`
+	LeaderCodes    string  `parquet:"leader_codes"`
+	Tags           string  `parquet:"tags"`
+	UpdatedAt      string  `parquet:"updated_at"`
+}
+
 func (b DailyBar) AdjustedPrice() float64 {
 	return b.Close
 }

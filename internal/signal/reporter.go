@@ -41,6 +41,9 @@ type jsonOutput struct {
 	HasMoneyflow   bool               `json:"has_moneyflow"`
 	MoneyflowNet   float64            `json:"moneyflow_net_amount"`
 	LargeNet       float64            `json:"large_moneyflow_net_amount"`
+	SectorName     string             `json:"sector_name,omitempty"`
+	SectorTags     []string           `json:"sector_tags,omitempty"`
+	SectorChg1     float64            `json:"sector_chg1,omitempty"`
 	HasRealtime    bool               `json:"has_realtime"`
 	RealtimePrice  float64            `json:"realtime_price"`
 	RealtimePct    float64            `json:"realtime_change_pct"`
@@ -127,13 +130,16 @@ func (r *Reporter) printTableWithWatch(results []SignalResult, watchlist []Signa
 
 func (r *Reporter) printCSV(results []SignalResult) error {
 	w := csv.NewWriter(os.Stdout)
-	w.Write([]string{"排名", "周期", "代码", "名称", "日期", "收盘价", "实时价", "盘中涨跌%", "实时更新时间", "盘中标签", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "资金净额(万)", "大单净额(万)", "风险标签", "是否过滤", "过滤原因", "建议", "触发策略"})
+	w.Write([]string{"排名", "周期", "代码", "名称", "板块", "板块涨跌%", "板块标签", "日期", "收盘价", "实时价", "盘中涨跌%", "实时更新时间", "盘中标签", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "资金净额(万)", "大单净额(万)", "风险标签", "是否过滤", "过滤原因", "建议", "触发策略"})
 	for i, res := range results {
 		w.Write([]string{
 			fmt.Sprintf("%d", i+1),
 			string(res.Horizon),
 			res.Code,
 			res.Name,
+			res.SectorName,
+			formatOptionalPct(res.SectorName != "", res.SectorChg1),
+			strings.Join(res.SectorTags, ";"),
 			res.Date,
 			fmt.Sprintf("%.2f", res.Close),
 			formatCSVAmount(res.HasRealtime, res.RealtimePrice),
@@ -160,7 +166,7 @@ func (r *Reporter) printCSV(results []SignalResult) error {
 
 func (r *Reporter) printCSVWithWatch(results []SignalResult, watchlist []SignalResult) error {
 	w := csv.NewWriter(os.Stdout)
-	w.Write([]string{"类别", "排名", "周期", "代码", "名称", "日期", "收盘价", "实时价", "盘中涨跌%", "实时更新时间", "盘中标签", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "资金净额(万)", "大单净额(万)", "风险标签", "是否过滤", "过滤原因", "观察原因", "建议", "触发策略"})
+	w.Write([]string{"类别", "排名", "周期", "代码", "名称", "板块", "板块涨跌%", "板块标签", "日期", "收盘价", "实时价", "盘中涨跌%", "实时更新时间", "盘中标签", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "资金净额(万)", "大单净额(万)", "风险标签", "是否过滤", "过滤原因", "观察原因", "建议", "触发策略"})
 	writeCSVRows(w, "正式信号", results, false)
 	writeCSVRows(w, "观察机会", watchlist, true)
 	w.Flush()
@@ -198,6 +204,9 @@ func writeCSVRows(w *csv.Writer, category string, results []SignalResult, includ
 			string(res.Horizon),
 			res.Code,
 			res.Name,
+			res.SectorName,
+			formatOptionalPct(res.SectorName != "", res.SectorChg1),
+			strings.Join(res.SectorTags, ";"),
 			res.Date,
 			fmt.Sprintf("%.2f", res.Close),
 			formatCSVAmount(res.HasRealtime, res.RealtimePrice),
@@ -245,6 +254,9 @@ func toJSONOutput(results []SignalResult, includeWatchReason bool) []jsonOutput 
 			HasMoneyflow:   r.HasMoneyflow,
 			MoneyflowNet:   r.MoneyflowNetAmount,
 			LargeNet:       r.LargeMoneyflowNetAmount,
+			SectorName:     r.SectorName,
+			SectorTags:     r.SectorTags,
+			SectorChg1:     r.SectorChg1,
 			HasRealtime:    r.HasRealtime,
 			RealtimePrice:  r.RealtimePrice,
 			RealtimePct:    r.RealtimeChangePct,
@@ -283,10 +295,10 @@ func printRecommendationTable(title string, results []SignalResult, ascending bo
 
 	fmt.Printf("\n%s\n", title)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "排名\t代码\t名称\t日期\t收盘价\t盘中\t买/卖\t评分\t置信度\t仓位\t资金\t风险\t触发策略")
+	fmt.Fprintln(w, "排名\t代码\t名称\t板块\t日期\t收盘价\t盘中\t买/卖\t评分\t置信度\t仓位\t资金\t风险\t触发策略")
 	for i, r := range results {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%.2f\t%s\t%d/%d\t%.2f\t%.0f\t%.1f%%\t%s\t%s\t%s\n",
-			i+1, r.Code, r.Name, r.Date, r.Close, formatRealtime(r), r.BuyCount, r.SellCount,
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%.2f\t%s\t%d/%d\t%.2f\t%.0f\t%.1f%%\t%s\t%s\t%s\n",
+			i+1, r.Code, r.Name, formatSector(r), r.Date, r.Close, formatRealtime(r), r.BuyCount, r.SellCount,
 			r.TotalScore, r.Confidence, r.PositionPct, formatMoneyflow(r), strings.Join(r.RiskLabels, ","),
 			formatActiveStrategies(r.Strategies))
 	}
@@ -308,10 +320,10 @@ func printWatchTable(title string, results []SignalResult) {
 
 	fmt.Printf("\n%s\n", title)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "排名\t周期\t代码\t名称\t日期\t收盘价\t盘中\t买/卖\t评分\t置信度\t资金\t风险\t观察原因\t触发策略")
+	fmt.Fprintln(w, "排名\t周期\t代码\t名称\t板块\t日期\t收盘价\t盘中\t买/卖\t评分\t置信度\t资金\t风险\t观察原因\t触发策略")
 	for i, r := range results {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%.2f\t%s\t%d/%d\t%.2f\t%.0f\t%s\t%s\t%s\t%s\n",
-			i+1, strategy.HorizonLabel(r.Horizon), r.Code, r.Name, r.Date, r.Close, formatRealtime(r),
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%.2f\t%s\t%d/%d\t%.2f\t%.0f\t%s\t%s\t%s\t%s\n",
+			i+1, strategy.HorizonLabel(r.Horizon), r.Code, r.Name, formatSector(r), r.Date, r.Close, formatRealtime(r),
 			r.BuyCount, r.SellCount, r.TotalScore, r.Confidence, formatMoneyflow(r),
 			strings.Join(r.RiskLabels, ","), formatWatchReason(r), formatActiveStrategies(r.Strategies))
 	}
@@ -336,11 +348,25 @@ func formatMoneyflow(r SignalResult) string {
 	return fmt.Sprintf("净%+.0f/大%+.0f", r.MoneyflowNetAmount, r.LargeMoneyflowNetAmount)
 }
 
+func formatSector(r SignalResult) string {
+	if r.SectorName == "" {
+		return "-"
+	}
+	return fmt.Sprintf("%s(%+.1f%%)", r.SectorName, r.SectorChg1)
+}
+
 func formatCSVAmount(ok bool, amount float64) string {
 	if !ok {
 		return ""
 	}
 	return fmt.Sprintf("%.0f", amount)
+}
+
+func formatOptionalPct(ok bool, amount float64) string {
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%.2f", amount)
 }
 
 func formatWatchReason(r SignalResult) string {

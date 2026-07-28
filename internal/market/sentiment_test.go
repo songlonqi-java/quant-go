@@ -42,6 +42,22 @@ func TestAnalyzeTradingStatsCapturesAShareRisk(t *testing.T) {
 	}
 }
 
+func TestDetermineSentimentTreatsZeroProfitEffectAsBearish(t *testing.T) {
+	ms := &MarketStatus{
+		IndexClose:   100,
+		MATrend:      "震荡",
+		Breadth:      45,
+		FallingCount: 20,
+		ProfitEffect: 0,
+	}
+
+	ms.determineSentiment()
+
+	if ms.Sentiment != "偏空" {
+		t.Fatalf("Sentiment = %q, want 偏空", ms.Sentiment)
+	}
+}
+
 func marketBar(code, date string, open, high, low, close float64) data.DailyBar {
 	return data.DailyBar{
 		TsCode:    code,
