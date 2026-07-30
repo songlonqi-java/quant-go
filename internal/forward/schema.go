@@ -5,7 +5,7 @@ import "quant/internal/strategy"
 var headers = []string{
 	"signal_date", "target_date", "horizon", "rank", "code", "name", "close",
 	"buy_signals", "sell_signals", "total_score", "confidence", "position_pct",
-	"key_strategies", "market_status", "position_advice", "entry_plan", "invalid_condition",
+	"key_strategies", "market_status", "position_advice", "benchmark", "entry_plan", "invalid_condition",
 	"next_open", "next_close", "next_return_pct",
 	"day3_close", "day3_return_pct", "day5_close", "day5_return_pct",
 	"day10_close", "day10_return_pct", "day20_close", "day20_return_pct", "day40_close", "day40_return_pct",

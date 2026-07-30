@@ -160,6 +160,16 @@ func LimitByRecommendation(results []SignalResult, topN int) []SignalResult {
 	return limited
 }
 
+// SelectCandidatePool keeps enough ranked signals to replace candidates that
+// fail intraday execution checks. A non-positive topN intentionally means the
+// full universe, matching LimitByRecommendation.
+func SelectCandidatePool(results []SignalResult, topN int) []SignalResult {
+	if topN <= 0 {
+		return LimitByRecommendation(results, topN)
+	}
+	return LimitByRecommendation(results, topN*3)
+}
+
 func limitRecommendationGroup(results []SignalResult, topN int) []SignalResult {
 	buys := filterByRecommendation(results, "买入")
 	sells := filterByRecommendation(results, "卖出")

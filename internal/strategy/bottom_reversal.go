@@ -9,7 +9,7 @@ type BottomReversal struct {
 	Lookback      int     // 回看天数 20
 	DropThreshold float64 // 跌幅阈值 -15% (20日内跌超此幅度才算低位)
 	VolumeRatio   float64 // 放量倍数 2.0
-	MinMarketCap  float64 // 最小市值(亿) 100
+	MinMarketCap  float64 // 最小市值(亿), 0 表示不限制
 	MinTurnover   float64 // 最小换手率 0.5
 	fundStore     *data.FundamentalStore
 }
@@ -82,7 +82,7 @@ func (b *BottomReversal) Signal(bars []data.DailyBar, idx int) SignalType {
 		if b.fundStore != nil {
 			code := bars[idx].TsCode
 			mv := b.fundStore.GetMarketCap(code, bars[idx].TradeDate)
-			if mv > 0 && mv < b.MinMarketCap*10000 {
+			if b.MinMarketCap > 0 && mv > 0 && mv < b.MinMarketCap*10000 {
 				return Hold
 			}
 			pe, _, ok := b.fundStore.GetPEAsOf(code, bars[idx].TradeDate)

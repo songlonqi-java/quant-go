@@ -54,11 +54,19 @@ func CalculateMetrics(result *Result, initialCapital float64, riskFreeRate float
 		m.Volatility = calcStdDev(dailyReturns) * math.Sqrt(float64(tradingDays)) * 100
 	}
 
-	if m.Volatility > 0 && tradingDays > 0 {
-		m.SharpeRatio = (m.AnnualizedReturn - riskFreeRate*100) / m.Volatility
+	if len(dailyReturns) > 1 && tradingDays > 0 {
+		dailyRiskFree := math.Pow(1+riskFreeRate, 1/float64(tradingDays)) - 1
+		excessReturns := make([]float64, len(dailyReturns))
+		for i, ret := range dailyReturns {
+			excessReturns[i] = ret - dailyRiskFree
+		}
+		stdDev := calcStdDev(excessReturns)
+		if stdDev > 0 {
+			m.SharpeRatio = mean(excessReturns) / stdDev * math.Sqrt(float64(tradingDays))
+		}
 	}
-	if m.MaxDrawdown > 0 && m.AnnualizedReturn > 0 {
-		m.CalmarRatio = m.AnnualizedReturn / math.Abs(m.MaxDrawdown)
+	if m.MaxDrawdown > 0 {
+		m.CalmarRatio = m.AnnualizedReturn / m.MaxDrawdown
 	}
 
 	var buys, sells []Trade
@@ -171,4 +179,15 @@ func calcStdDev(values []float64) float64 {
 	}
 	variance /= float64(len(values))
 	return math.Sqrt(variance)
+}
+
+func mean(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, value := range values {
+		sum += value
+	}
+	return sum / float64(len(values))
 }

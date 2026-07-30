@@ -47,6 +47,46 @@ func TestLoadFiltersLatestAndST(t *testing.T) {
 	}
 }
 
+func TestFilterByMarketCapAndActiveBarsUseSameUniverse(t *testing.T) {
+	store := data.NewFundamentalStore()
+	store.LoadDailyBasics([]data.DailyBasic{
+		{TsCode: "000001.SZ", TradeDate: "20260102", TotalMv: 1500000},
+		{TsCode: "000002.SZ", TradeDate: "20260102", TotalMv: 500000},
+	})
+	large := []data.DailyBar{
+		testBar("000001.SZ", "20260101", 10),
+		testBar("000001.SZ", "20260102", 11),
+	}
+	small := []data.DailyBar{
+		testBar("000002.SZ", "20260101", 10),
+		testBar("000002.SZ", "20260102", 9),
+	}
+	ds := &Dataset{
+		Bars:         append(append([]data.DailyBar{}, large...), small...),
+		CodeMap:      map[string][]data.DailyBar{"000001.SZ": large, "000002.SZ": small},
+		Fundamentals: store,
+		LatestDate:   "20260102",
+	}
+
+	ds.filterByMarketCap(100)
+
+	if len(ds.CodeMap) != 1 || ds.CodeMap["000001.SZ"] == nil {
+		t.Fatalf("CodeMap = %v, want only 000001.SZ", ds.CodeMap)
+	}
+	if ds.FilteredMarketCap != 1 {
+		t.Fatalf("FilteredMarketCap = %d, want 1", ds.FilteredMarketCap)
+	}
+	active := ds.ActiveBars()
+	if len(active) != len(large) {
+		t.Fatalf("len(ActiveBars()) = %d, want %d", len(active), len(large))
+	}
+	for _, bar := range active {
+		if bar.TsCode != "000001.SZ" {
+			t.Fatalf("active bar code = %s, want only 000001.SZ", bar.TsCode)
+		}
+	}
+}
+
 func testBar(code, date string, close float64) data.DailyBar {
 	return data.DailyBar{
 		TsCode:    code,

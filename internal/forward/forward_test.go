@@ -149,6 +149,63 @@ func TestRecordWithDecisionWritesCashRow(t *testing.T) {
 	if row["position_pct"] != "0.0" {
 		t.Fatalf("position_pct = %q, want 0.0", row["position_pct"])
 	}
+	if row["benchmark"] != "MARKET_PROXY_EQUAL_WEIGHT" {
+		t.Fatalf("benchmark = %q, want MARKET_PROXY_EQUAL_WEIGHT", row["benchmark"])
+	}
+}
+
+func TestValidateCashRowWritesMarketProxyReturns(t *testing.T) {
+	dir := t.TempDir()
+	results := []signal.SignalResult{{Date: "20260101", Horizon: strategy.HorizonShort, Code: "000001.SZ"}}
+	decision := signal.PositionDecision{Action: signal.PositionActionCash, Advice: "建议空仓"}
+	if err := RecordWithDecision(dir, results, nil, 5, []string{"20260101", "20260102", "20260103", "20260104", "20260105", "20260106"}, decision); err != nil {
+		t.Fatalf("RecordWithDecision() error = %v", err)
+	}
+
+	codeOne := []data.DailyBar{
+		forwardBar("20260101", 10, 10, 10, 10),
+		forwardBar("20260102", 10, 11, 10, 11),
+		forwardBar("20260103", 11, 12, 11, 12),
+		forwardBar("20260104", 12, 13, 12, 13),
+		forwardBar("20260105", 13, 14, 13, 14),
+		forwardBar("20260106", 14, 15, 14, 15),
+	}
+	codeOne[0].TsCode = "000001.SZ"
+	codeOne[1].TsCode = "000001.SZ"
+	codeOne[2].TsCode = "000001.SZ"
+	codeOne[3].TsCode = "000001.SZ"
+	codeOne[4].TsCode = "000001.SZ"
+	codeOne[5].TsCode = "000001.SZ"
+	codeTwo := []data.DailyBar{
+		forwardBar("20260101", 20, 20, 20, 20),
+		forwardBar("20260102", 20, 20, 19, 19),
+		forwardBar("20260103", 19, 19, 18, 18),
+		forwardBar("20260104", 18, 18, 17, 17),
+		forwardBar("20260105", 17, 17, 16, 16),
+		forwardBar("20260106", 16, 16, 15, 15),
+	}
+	for i := range codeTwo {
+		codeTwo[i].TsCode = "000002.SZ"
+	}
+
+	updated, err := Validate(dir, map[string][]data.DailyBar{"000001.SZ": codeOne, "000002.SZ": codeTwo})
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if updated != 3 {
+		t.Fatalf("updated = %d, want 3 market-proxy fields", updated)
+	}
+	rows, err := readRows(filepath.Join(dir, picksFile))
+	if err != nil {
+		t.Fatalf("readRows() error = %v", err)
+	}
+	row := rows[0]
+	if row["next_return_pct"] == "" || row["day3_return_pct"] == "" || row["day5_return_pct"] == "" {
+		t.Fatalf("cash benchmark returns not filled: row=%v", row)
+	}
+	if row["status"] != "cash_validated_5d" {
+		t.Fatalf("status = %q, want cash_validated_5d", row["status"])
+	}
 }
 
 func TestRecordWithDecisionKeepsLimitPerHorizon(t *testing.T) {

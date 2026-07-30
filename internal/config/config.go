@@ -64,7 +64,7 @@ var defaultConfig = Config{
 		StartYear:     2020,
 		EndYear:       2026,
 		StockPrefixes: []string{"60", "00", "001"},
-		MinMarketCap:  100,
+		MinMarketCap:  0,
 	},
 	Backtest: BacktestConfig{
 		InitialCapital: 100000.0,

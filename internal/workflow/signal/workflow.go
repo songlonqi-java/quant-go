@@ -20,14 +20,21 @@ import (
 )
 
 type Options struct {
-	Config        *config.Config
-	StrategyNames []string
-	TopN          int
-	WatchN        int
-	Realtime      bool
-	PortfolioPath string
-	ForwardDir    string
+	Config           *config.Config
+	StrategyNames    []string
+	TopN             int
+	WatchN           int
+	Realtime         bool
+	PortfolioPath    string
+	ForwardDir       string
+	NewsAnalyzer     NewsAnalyzer
+	RealtimeProvider realtime.Provider
 }
+
+// NewsAnalyzer is the seam for the optional external news source. Production
+// uses the package implementation; callers can provide a deterministic
+// adapter when running the workflow in another environment or in tests.
+type NewsAnalyzer func(context.Context, string, int) (*news.NewsSummary, error)
 
 type Result struct {
 	StrategyNames    []string
@@ -93,8 +100,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		Dataset:       ds,
 		PriceQuality:  priceQuality,
 	}
-	result.MarketStatus = market.Analyze(ds.Bars)
-	result.NewsSummary, result.NewsErr = news.Analyze(ctx, nil, cfg.Data.RawDir, 8)
+	result.MarketStatus = market.Analyze(ds.ActiveBars())
+	result.NewsSummary, result.NewsErr = analyzeNews(ctx, cfg.Data.RawDir, opts.NewsAnalyzer)
 	result.SectorReport, result.SectorErr = sector.LoadReport(cfg.Data.RawDir, ds.LatestDate)
 
 	portfolioSummary, err := loadPortfolioSummary(opts.PortfolioPath, ds)
@@ -111,27 +118,29 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			result.SectorErr = err
 		}
 	}
-	preliminarySignals := signals.LimitByRecommendation(allSignals, topN)
-	preliminaryWatchlist := signals.SelectWatchlist(allSignals, preliminarySignals, opts.WatchN)
+	candidatePool := signals.SelectCandidatePool(allSignals, topN)
+	watchPool := signals.SelectWatchlist(allSignals, candidatePool, opts.WatchN*3)
 
 	if opts.Realtime {
-		quoteMap, err := fetchRealtimeQuotes(realtimeTargets(preliminarySignals, preliminaryWatchlist), result.PortfolioSummary)
+		quoteMap, err := fetchRealtimeQuotes(opts.RealtimeProvider, realtimeTargets(candidatePool, watchPool), result.PortfolioSummary)
 		if err != nil {
 			result.RealtimeErr = err
 		} else if len(quoteMap) > 0 {
-			signals.ApplyRealtimeQuotes(allSignals, quoteMap, ds.StkLimits)
+			signals.ApplyRealtimeQuotes(candidatePool, quoteMap, ds.StkLimits)
+			signals.ApplyRealtimeQuotes(watchPool, quoteMap, ds.StkLimits)
 			portfolio.ApplyRealtimeQuotes(result.PortfolioSummary, quoteMap)
 			result.RealtimeLoaded = len(quoteMap)
 		}
 	}
 
-	result.PositionDecision = signals.ApplyPositionPolicy(allSignals, result.MarketStatus)
-	result.Signals = signals.LimitByRecommendation(matchingSignals(allSignals, preliminarySignals), topN)
-	result.Watchlist = signals.SelectWatchlist(matchingSignals(allSignals, realtimeTargets(preliminarySignals, preliminaryWatchlist)), result.Signals, opts.WatchN)
+	result.PositionDecision = signals.ApplyPositionPolicy(candidatePool, result.MarketStatus)
+	result.Signals = signals.LimitByRecommendation(candidatePool, topN)
+	watchSource := append(candidatePool, watchPool...)
+	result.Watchlist = signals.SelectWatchlist(watchSource, result.Signals, opts.WatchN)
 
 	forwardSignals := result.Signals
 	if len(forwardSignals) == 0 && shouldRecordCash(result.PositionDecision) {
-		forwardSignals = allSignals
+		forwardSignals = candidatePool
 	}
 	if len(forwardSignals) > 0 {
 		result.ForwardErr = forward.RecordWithDecision(opts.ForwardDir, forwardSignals, result.MarketStatus, 5, ds.TradingDates, result.PositionDecision)
@@ -157,22 +166,11 @@ func realtimeTargets(signalsList []signals.SignalResult, watchlist []signals.Sig
 	return targets
 }
 
-func matchingSignals(source []signals.SignalResult, targets []signals.SignalResult) []signals.SignalResult {
-	keys := make(map[string]bool, len(targets))
-	for _, r := range targets {
-		keys[workflowSignalKey(r)] = true
+func analyzeNews(ctx context.Context, rawDir string, analyzer NewsAnalyzer) (*news.NewsSummary, error) {
+	if analyzer != nil {
+		return analyzer(ctx, rawDir, 8)
 	}
-	matched := make([]signals.SignalResult, 0, len(targets))
-	for _, r := range source {
-		if keys[workflowSignalKey(r)] {
-			matched = append(matched, r)
-		}
-	}
-	return matched
-}
-
-func workflowSignalKey(r signals.SignalResult) string {
-	return string(r.Horizon) + "|" + r.Code
+	return news.Analyze(ctx, nil, rawDir, 8)
 }
 
 func shouldRecordCash(decision signals.PositionDecision) bool {
@@ -231,7 +229,7 @@ func strategyNamesFrom(strategies []strategy.Strategy) []string {
 	return names
 }
 
-func fetchRealtimeQuotes(results []signals.SignalResult, portfolioSummary *portfolio.Summary) (map[string]realtime.Quote, error) {
+func fetchRealtimeQuotes(provider realtime.Provider, results []signals.SignalResult, portfolioSummary *portfolio.Summary) (map[string]realtime.Quote, error) {
 	var codes []string
 	for _, r := range results {
 		codes = append(codes, r.Code)
@@ -245,7 +243,9 @@ func fetchRealtimeQuotes(results []signals.SignalResult, portfolioSummary *portf
 	if len(codes) == 0 {
 		return nil, nil
 	}
-	provider := realtime.NewSinaProvider()
+	if provider == nil {
+		provider = realtime.NewSinaProvider()
+	}
 	quotes, err := provider.Fetch(codes)
 	if err != nil {
 		return nil, err

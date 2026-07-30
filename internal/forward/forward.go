@@ -89,6 +89,7 @@ func RecordWithDecision(dir string, results []signal.SignalResult, marketStatus 
 			"key_strategies":    strings.Join(buyStrategies(pick), ";"),
 			"market_status":     marketSentiment(marketStatus),
 			"position_advice":   marketAdvice(marketStatus),
+			"benchmark":         "",
 			"entry_plan":        entryPlan(pick),
 			"invalid_condition": "高开>3%或跌破前日低点",
 			"status":            "pending",
@@ -150,6 +151,7 @@ func recordCashDecision(dir string, results []signal.SignalResult, marketStatus 
 		"key_strategies":    "cash",
 		"market_status":     marketSentiment(marketStatus),
 		"position_advice":   decision.Advice,
+		"benchmark":         "MARKET_PROXY_EQUAL_WEIGHT",
 		"entry_plan":        decision.Advice,
 		"invalid_condition": "市场转强且出现合格候选才解除空仓",
 		"status":            "cash",
@@ -203,8 +205,13 @@ func Validate(dir string, barsMap map[string][]data.DailyBar) (int, error) {
 		return 0, err
 	}
 	updated := 0
+	marketDates := marketTradingDates(barsMap)
 	for _, row := range rows {
 		code := row["code"]
+		if code == "CASH" {
+			updated += validateCashRow(row, barsMap, marketDates)
+			continue
+		}
 		targetDate := row["target_date"]
 		bars := append([]data.DailyBar(nil), barsMap[code]...)
 		if len(bars) == 0 || targetDate == "" {
@@ -255,6 +262,80 @@ func Validate(dir string, barsMap map[string][]data.DailyBar) (int, error) {
 		return 0, nil
 	}
 	return updated, writeRows(path, rows)
+}
+
+func validateCashRow(row map[string]string, barsMap map[string][]data.DailyBar, marketDates []string) int {
+	if len(marketDates) == 0 || row["target_date"] == "" {
+		return 0
+	}
+	targetIdx := firstDateOnOrAfter(marketDates, row["target_date"])
+	if targetIdx < 0 {
+		return 0
+	}
+
+	updated := 0
+	entryDate := marketDates[targetIdx]
+	if row["next_return_pct"] == "" {
+		if ret, ok := equalWeightMarketReturn(barsMap, entryDate, entryDate); ok {
+			row["next_return_pct"] = fmt.Sprintf("%.2f", ret)
+			row["status"] = "cash_validated_1d"
+			appendNote(row, "空仓对照：等权市场代理当日收益")
+			updated++
+		}
+	}
+
+	for _, target := range validationTargets(row["horizon"]) {
+		if targetIdx+target.offset >= len(marketDates) || row[target.returnField] != "" {
+			continue
+		}
+		exitDate := marketDates[targetIdx+target.offset]
+		if ret, ok := equalWeightMarketReturn(barsMap, entryDate, exitDate); ok {
+			row[target.returnField] = fmt.Sprintf("%.2f", ret)
+			row["status"] = "cash_validated_" + target.label
+			updated++
+		}
+	}
+	return updated
+}
+
+func marketTradingDates(barsMap map[string][]data.DailyBar) []string {
+	seen := make(map[string]bool)
+	for _, bars := range barsMap {
+		for _, bar := range bars {
+			if bar.TradeDate != "" {
+				seen[bar.TradeDate] = true
+			}
+		}
+	}
+	dates := make([]string, 0, len(seen))
+	for date := range seen {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	return dates
+}
+
+func equalWeightMarketReturn(barsMap map[string][]data.DailyBar, entryDate, exitDate string) (float64, bool) {
+	var total float64
+	count := 0
+	for _, bars := range barsMap {
+		entryIdx := indexByDate(bars, entryDate)
+		exitIdx := indexByDate(bars, exitDate)
+		if entryIdx < 0 || exitIdx < 0 {
+			continue
+		}
+		entry := bars[entryIdx].TradeOpen()
+		exit := bars[exitIdx].TradeClose()
+		if entry <= 0 || exit <= 0 {
+			continue
+		}
+		total += returnPct(entry, exit)
+		count++
+	}
+	if count == 0 {
+		return 0, false
+	}
+	return total / float64(count), true
 }
 
 func validateHorizonReturns(row map[string]string, bars []data.DailyBar, targetIdx int) int {
@@ -545,6 +626,15 @@ func nextTradingDate(date string, tradingDates []string) string {
 func firstIndexOnOrAfter(bars []data.DailyBar, date string) int {
 	for i, b := range bars {
 		if b.TradeDate >= date {
+			return i
+		}
+	}
+	return -1
+}
+
+func firstDateOnOrAfter(dates []string, date string) int {
+	for i, candidate := range dates {
+		if candidate >= date {
 			return i
 		}
 	}
