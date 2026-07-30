@@ -1,6 +1,6 @@
 # go-quant Agent 指南
 
-A 股量化工具：日线数据拉取 + 21 个策略回测 + 买卖信号 + 持仓管理 + 新闻热度 + 市场情绪 + 前向测试。
+A 股量化工具：日线数据拉取 + 23 个策略回测 + 买卖信号 + 持仓管理 + 新闻热度 + 市场情绪 + 前向测试。
 
 ## 快速开始
 
@@ -31,7 +31,7 @@ go build -o go-quant ./cmd/go-quant/
 | 文档 | 内容 |
 |------|------|
 | [docs/commands.md](docs/commands.md) | 完整 CLI 命令参考（fetch/signal/backtest/forward/list） |
-| [docs/strategies.md](docs/strategies.md) | 全部 21 个策略详解（短线12/中线8/长线1） |
+| [docs/strategies.md](docs/strategies.md) | 全部 23 个策略详解（短线12/中线8/长线3） |
 | [docs/portfolio.md](docs/portfolio.md) | 持仓管理：交易流水 → 自动盈亏 + 报表导出 |
 
 ## 仓库结构
@@ -41,7 +41,7 @@ cmd/go-quant/main.go            # Cobra CLI 入口
 internal/
   config/config.go              # YAML 配置 + 环境变量覆盖
   data/                         # 数据层：Tushare API / Parquet存储 / 基本面Store
-  strategy/                     # 21 个策略（interface → registry → 各实现）
+  strategy/                     # 23 个策略（interface → registry → 各实现）
   backtest/                     # 回测引擎 + 绩效指标
   signal/                       # 多策略信号聚合 + 输出格式化
   market/sentiment.go           # 市场情绪：指数/宽度/板块热度
@@ -77,7 +77,7 @@ tushare:
 
 fetch:
   stock_prefixes: ["60", "00", "001"]  # 股票池前缀
-  min_market_cap: 100     # 最小市值(亿)
+  min_market_cap: 0       # 最小市值(亿), 0 表示不限制
 
 backtest:
   commission: 0.0003      # 佣金 0.03%
@@ -121,13 +121,13 @@ type Strategy interface {
 
 多策略并发运行 → 按短线/中线/长线拆分 → 每个周期内独立判断 → 按策略家族限权 → 市场情绪调权 → 资金流向确认/背离 → 新浪实时行情盘中校验 → 空仓/观望/轻仓/买入仓位决策 → 置信度/仓位/风险标签 → 排名输出。基本面策略可通过 `FundStoreUser` 接口自动注入 PE/ROE/市值数据；横截面策略可通过 `UniverseUser` 注入股票池；资金流向通过 `MoneyflowStore` 注入信号输出。
 
-`signal -n` 是每个周期买入/卖出各最多 N 条。前向测试当前只记录短线合格买入候选；如果仓位决策为 `空仓` 或 `观望`，会记录 `CASH`，因为 `forward validate` 的验证窗口是 1/3/5 日。
+`signal -n` 是每个周期买入/卖出各最多 N 条。前向测试会记录各周期合格买入候选：短线验证 1/3/5 日，中线验证 10/20/40 日，长线验证 60/120/250 日；如果仓位决策为 `空仓` 或 `观望`，会记录 `CASH` 与等权市场代理收益。
 
 实时行情通过 `internal/realtime.Provider` 接口接入，当前实现是新浪 `hq.sinajs.cn/list=`。该数据只用于候选股和持仓的盘中展示、追高/涨停/走弱等标签，不写入 `data/raw/daily/*.parquet`，也不参与正式历史回测。需要关闭时使用 `./go-quant signal --realtime=false`。
 
 ### 市值过滤
 
-拉取流程：`stock_basic` → 前缀过滤 → `daily_basic` 获取最新市值 → 只保留 ≥100 亿的股票 → 所有后续分析只用到这些股票。
+分析数据集会先按最新交易日和 ST 过滤；如配置了 `min_market_cap > 0`，再按该分析日可取得的 `daily_basic.total_mv` 过滤，缺少市值数据的股票不会进入信号和市场统计。当前默认不限制市值。历史全量拉取仍会按当时配置缩小下载范围，因此不能把它当作无幸存者偏差的回测股票池。
 
 ### 数据拉取效率
 

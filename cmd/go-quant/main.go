@@ -430,7 +430,10 @@ func signalCmd() *cobra.Command {
 				fmt.Printf("过滤ST股: %d只, 剩余: %d只\n", ds.FilteredST, len(ds.CodeMap))
 			}
 			if ds.FilteredNoBasic > 0 {
-				fmt.Printf("过滤无基本面数据(小盘股): %d只, 剩余: %d只\n", ds.FilteredNoBasic, len(ds.CodeMap))
+				fmt.Printf("过滤无市值数据: %d只, 剩余: %d只\n", ds.FilteredNoBasic, len(ds.CodeMap))
+			}
+			if ds.FilteredMarketCap > 0 {
+				fmt.Printf("过滤市值不足: %d只, 剩余: %d只\n", ds.FilteredMarketCap, len(ds.CodeMap))
 			}
 			if !result.PriceQuality.HasCompleteRawPrices() {
 				fmt.Printf("警告: 最近交易日%s；将跳过依赖真实成交价的策略，持仓/前向验证需重拉数据后才准确\n", result.PriceQuality.Summary())
@@ -692,7 +695,7 @@ func printBacktestAggregate(metricsList []backtest.PerformanceMetrics) {
 		median = (returns[len(returns)/2-1] + returns[len(returns)/2]) / 2
 	}
 	n := float64(len(metricsList))
-	fmt.Printf("\n========== 样本汇总 ==========\n")
+	fmt.Printf("\n========== 单标的样本汇总（非组合回测） ==========\n")
 	fmt.Printf("样本数:       %d 只\n", len(metricsList))
 	fmt.Printf("平均收益:     %11.2f%%\n", sumReturn/n)
 	fmt.Printf("中位收益:     %11.2f%%\n", median)
@@ -702,5 +705,6 @@ func printBacktestAggregate(metricsList []backtest.PerformanceMetrics) {
 	fmt.Printf("正收益股票:   %d / %d\n", winStocks, len(metricsList))
 	fmt.Printf("总交易次数:   %d\n", totalTrades)
 	fmt.Printf("收益区间:     %11.2f%% ~ %.2f%%\n", returns[0], returns[len(returns)-1])
+	fmt.Println("说明: 每只股票独立满仓模拟；均值不代表按 signal 选股后的组合收益")
 	fmt.Println("==============================")
 }

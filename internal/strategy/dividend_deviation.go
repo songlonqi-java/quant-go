@@ -45,15 +45,15 @@ func (d *DividendDeviation) Signal(bars []data.DailyBar, idx int) SignalType {
 	buySig := curBar.Close <= buyThreshold && curBar.Close > curBar.Open && prevBar.Close > prevBar.Open
 	sellSig := curBar.Close >= sellThreshold && hasLongUpperShadow(curBar)
 
-	if buySig && d.fundStore != nil {
-		code := bars[idx].TsCode
-		dv := d.fundStore.GetDailyBasicAsOf(code, bars[idx].TradeDate)
-		if dv != nil && !isSensibleHighDividend(dividendYield(dv)) {
+	if buySig {
+		if d.fundStore == nil {
 			return Hold
 		}
-	}
-
-	if buySig {
+		code := bars[idx].TsCode
+		dv := d.fundStore.GetDailyBasicAsOf(code, bars[idx].TradeDate)
+		if dv == nil || !isSensibleHighDividend(dividendYield(dv)) {
+			return Hold
+		}
 		return Buy
 	}
 	if sellSig {

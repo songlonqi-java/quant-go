@@ -22,7 +22,8 @@ func ReadParquetDir(dir string) ([]DailyBar, error) {
 		return nil, fmt.Errorf("目录 %s 中没有找到 parquet 文件", dir)
 	}
 
-	var allBars []DailyBar
+	byKey := make(map[string]DailyBar)
+	var order []string
 	for _, f := range files {
 		if strings.Contains(f, "stocks.parquet") {
 			continue
@@ -31,7 +32,17 @@ func ReadParquetDir(dir string) ([]DailyBar, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取 %s 失败: %w", f, err)
 		}
-		allBars = append(allBars, bars...)
+		for _, bar := range bars {
+			key := bar.TsCode + "|" + bar.TradeDate
+			if _, ok := byKey[key]; !ok {
+				order = append(order, key)
+			}
+			byKey[key] = bar
+		}
+	}
+	allBars := make([]DailyBar, 0, len(order))
+	for _, key := range order {
+		allBars = append(allBars, byKey[key])
 	}
 	return allBars, nil
 }
@@ -84,6 +95,51 @@ func ReadParquetFile(filepath string) ([]DailyBar, error) {
 		bars = append(bars, bar)
 	}
 	return bars, nil
+}
+
+func FilterBarsByDate(bars []DailyBar, tradeDate string) []DailyBar {
+	filtered := make([]DailyBar, 0)
+	for _, bar := range bars {
+		if bar.TradeDate == tradeDate {
+			filtered = append(filtered, bar)
+		}
+	}
+	return filtered
+}
+
+func MergeDailyBars(existing []DailyBar, incoming []DailyBar) []DailyBar {
+	byKey := make(map[string]DailyBar, len(existing)+len(incoming))
+	for _, bar := range existing {
+		byKey[bar.TsCode+"|"+bar.TradeDate] = bar
+	}
+	for _, bar := range incoming {
+		byKey[bar.TsCode+"|"+bar.TradeDate] = bar
+	}
+
+	merged := make([]DailyBar, 0, len(byKey))
+	for _, bar := range byKey {
+		merged = append(merged, bar)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].TradeDate == merged[j].TradeDate {
+			return merged[i].TsCode < merged[j].TsCode
+		}
+		return merged[i].TradeDate < merged[j].TradeDate
+	})
+	return merged
+}
+
+func WriteMergedParquetFile(path string, incoming []DailyBar) error {
+	if len(incoming) == 0 {
+		return nil
+	}
+	existing, err := ReadParquetFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return WriteParquetFile(path, MergeDailyBars(existing, incoming))
 }
 
 func WriteParquetFile(filepath string, bars []DailyBar) error {

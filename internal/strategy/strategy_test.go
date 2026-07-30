@@ -63,6 +63,57 @@ func TestDividendDeviationFiltersLowDividend(t *testing.T) {
 	}
 }
 
+func TestDividendDeviationRequiresDividendData(t *testing.T) {
+	s := NewDividendDeviation(3, 0.9, 1.2)
+	if got := s.Signal(dividendDeviationBars(), 3); got != Hold {
+		t.Fatalf("Signal() = %s, want HOLD when dividend data is unavailable", got)
+	}
+}
+
+func TestWilliamsRScoreRewardsOversoldState(t *testing.T) {
+	bars := []data.DailyBar{
+		strategyBar("20260101", 10, 10.2, 9.8, 10),
+		strategyBar("20260102", 10, 10.1, 9.5, 9.7),
+		strategyBar("20260103", 9.7, 9.8, 9.1, 9.2),
+		strategyBar("20260104", 9.2, 9.3, 8.9, 9.0),
+	}
+	s := NewWilliamsR(3, -80, -20)
+	if score := s.Score(bars, 3); score <= 0 {
+		t.Fatalf("Score() = %.2f, want positive score for oversold %%R", score)
+	}
+}
+
+func TestLimitUpDoesNotSellUnrelatedDownDay(t *testing.T) {
+	bars := make([]data.DailyBar, 12)
+	for i := range bars {
+		bars[i] = strategyBar(strategyDate(i), 10, 10.1, 9.9, 10)
+	}
+	bars[11] = strategyBar(strategyDate(11), 10, 10.1, 9.7, 9.8)
+
+	if got := NewLimitUp(9.5, 1.2).Signal(bars, 11); got != Hold {
+		t.Fatalf("Signal() = %s, want HOLD for unrelated down day", got)
+	}
+}
+
+func TestLimitUpSellsOnlyAfterConfirmedEntry(t *testing.T) {
+	bars := make([]data.DailyBar, 13)
+	for i := range bars {
+		bars[i] = strategyBar(strategyDate(i), 10, 10.1, 9.9, 10)
+	}
+	bars[10] = strategyBar(strategyDate(10), 10, 11, 10, 11)
+	bars[11] = strategyBar(strategyDate(11), 11.1, 11.3, 11.0, 11.2)
+	bars[11].Vol = 2000
+	bars[12] = strategyBar(strategyDate(12), 11.1, 11.2, 10.8, 11.0)
+	s := NewLimitUp(9.5, 1.2)
+
+	if got := s.Signal(bars, 11); got != Buy {
+		t.Fatalf("Signal() = %s, want BUY after confirmed limit-up entry", got)
+	}
+	if got := s.Signal(bars, 12); got != Sell {
+		t.Fatalf("Signal() = %s, want SELL only after previous entry", got)
+	}
+}
+
 func TestMACDUsesRecursiveEMA(t *testing.T) {
 	bars := []data.DailyBar{
 		strategyBar("20260101", 10, 10, 10, 10),
@@ -233,6 +284,19 @@ func TestEarningsGrowthBuySignal(t *testing.T) {
 	}
 	if GroupForStrategy(s.Name()) != GroupValue {
 		t.Fatalf("GroupForStrategy(%s) = %s, want value", s.Name(), GroupForStrategy(s.Name()))
+	}
+}
+
+func TestRegistryAndMetadataContainTheSameStrategies(t *testing.T) {
+	registry := DefaultRegistry()
+	if registry.Count() != len(strategyMetadata) {
+		t.Fatalf("registry count = %d, metadata count = %d", registry.Count(), len(strategyMetadata))
+	}
+	for _, name := range registry.List() {
+		meta := MetadataForStrategy(name)
+		if meta.Name != name || meta.Group == GroupOther {
+			t.Fatalf("metadata for %s = %+v, want named non-default metadata", name, meta)
+		}
 	}
 }
 

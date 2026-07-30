@@ -186,12 +186,14 @@ func (f *Fetcher) FetchToday(ctx context.Context, force bool) ([]DailyBar, error
 	today := time.Now().Format("20060102")
 	fmt.Printf(">>> 拉取今日数据 (%s)...\n", today)
 
-	todayFile := filepath.Join(f.rawDir, "daily", fmt.Sprintf("today_%s.parquet", today))
+	yearFile := filepath.Join(f.rawDir, "daily", fmt.Sprintf("%s.parquet", today[:4]))
 
 	if !force {
-		if _, err := os.Stat(todayFile); err == nil {
-			fmt.Printf(">>> 今日数据文件已存在: %s (使用 --force 强制覆盖)\n", todayFile)
-			return ReadParquetFile(todayFile)
+		if existing, err := ReadParquetFile(yearFile); err == nil {
+			if bars := FilterBarsByDate(existing, today); len(bars) > 0 {
+				fmt.Printf(">>> 今日数据已在年度文件中: %s (%d 条, 使用 --force 强制覆盖)\n", yearFile, len(bars))
+				return bars, nil
+			}
 		}
 	}
 
@@ -224,10 +226,10 @@ func (f *Fetcher) FetchToday(ctx context.Context, force bool) ([]DailyBar, error
 		bars = filtered
 	}
 
-	if err := WriteParquetFile(todayFile, bars); err != nil {
+	if err := WriteMergedParquetFile(yearFile, bars); err != nil {
 		fmt.Printf("  警告: 保存今日数据失败: %v\n", err)
 	} else {
-		fmt.Printf(">>> 今日数据已保存: %s (%d 条)\n", todayFile, len(bars))
+		fmt.Printf(">>> 今日数据已合并保存: %s (%d 条)\n", yearFile, len(bars))
 	}
 
 	return bars, nil
@@ -236,11 +238,13 @@ func (f *Fetcher) FetchToday(ctx context.Context, force bool) ([]DailyBar, error
 func (f *Fetcher) FetchDate(ctx context.Context, date string, force bool) ([]DailyBar, error) {
 	fmt.Printf(">>> 拉取 %s 数据...\n", date)
 
-	dateFile := filepath.Join(f.rawDir, "daily", fmt.Sprintf("today_%s.parquet", date))
+	yearFile := filepath.Join(f.rawDir, "daily", fmt.Sprintf("%s.parquet", date[:4]))
 	if !force {
-		if _, err := os.Stat(dateFile); err == nil {
-			fmt.Printf(">>> 数据文件已存在: %s (使用 --force 强制覆盖)\n", dateFile)
-			return ReadParquetFile(dateFile)
+		if existing, err := ReadParquetFile(yearFile); err == nil {
+			if bars := FilterBarsByDate(existing, date); len(bars) > 0 {
+				fmt.Printf(">>> %s 数据已在年度文件中: %s (%d 条, 使用 --force 强制覆盖)\n", date, yearFile, len(bars))
+				return bars, nil
+			}
 		}
 	}
 
@@ -272,10 +276,10 @@ func (f *Fetcher) FetchDate(ctx context.Context, date string, force bool) ([]Dai
 		bars = filtered
 	}
 
-	if err := WriteParquetFile(dateFile, bars); err != nil {
+	if err := WriteMergedParquetFile(yearFile, bars); err != nil {
 		return nil, err
 	}
-	fmt.Printf(">>> %s 数据已保存 (%d 条)\n", date, len(bars))
+	fmt.Printf(">>> %s 数据已合并保存: %s (%d 条)\n", date, yearFile, len(bars))
 	return bars, nil
 }
 

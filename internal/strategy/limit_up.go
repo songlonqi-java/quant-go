@@ -21,17 +21,29 @@ func (l *LimitUp) Signal(bars []data.DailyBar, idx int) SignalType {
 	if idx < l.Warmup() || idx < 1 {
 		return Hold
 	}
+	if l.buySignalAt(bars, idx) {
+		return Buy
+	}
+	// The strategy has no portfolio state. Limit exits to stocks whose entry
+	// condition was confirmed on the preceding day, instead of emitting SELL
+	// for every ordinary down day in the market.
+	if idx >= 3 && l.buySignalAt(bars, idx-1) && !l.isLimitUpDay(bars, idx) {
+		return Sell
+	}
+	return Hold
+}
+
+func (l *LimitUp) buySignalAt(bars []data.DailyBar, idx int) bool {
+	if idx < l.Warmup() {
+		return false
+	}
 
 	prevClose2 := bars[idx-2].TradeClose()
 	prevClose := bars[idx-1].TradeClose()
 	if prevClose2 <= 0 {
-		return Hold
+		return false
 	}
-	prevChg := (prevClose/prevClose2 - 1) * 100
-	isLimitUp := prevChg >= l.LimitPct || (bars[idx-1].TradeHigh()-prevClose2)/prevClose2*100 >= l.LimitPct
-	if bars[idx-1].HasLimitPrices() {
-		isLimitUp = bars[idx-1].IsLimitUpClose() || bars[idx-1].IsLimitUpPrice(bars[idx-1].TradeHigh())
-	}
+	isLimitUp := l.isLimitUpDay(bars, idx-1)
 
 	if isLimitUp {
 		curOpen := bars[idx].TradeOpen()
@@ -47,16 +59,27 @@ func (l *LimitUp) Signal(bars []data.DailyBar, idx int) SignalType {
 		}
 
 		if isGapUp && isVolumeUp && isHoldingUp && isNotOpenLimit {
-			return Buy
+			return true
 		}
 	}
+	return false
+}
 
-	prevDayChg := (bars[idx].TradeClose()/prevClose - 1) * 100
-	if prevDayChg < l.LimitPct*0.5 && bars[idx].TradeClose() < prevClose {
-		return Sell
+func (l *LimitUp) isLimitUpDay(bars []data.DailyBar, idx int) bool {
+	if idx < 1 || idx >= len(bars) {
+		return false
 	}
-
-	return Hold
+	prevClose := bars[idx-1].TradeClose()
+	if prevClose <= 0 {
+		return false
+	}
+	bar := bars[idx]
+	if bar.HasLimitPrices() {
+		return bar.IsLimitUpClose() || bar.IsLimitUpPrice(bar.TradeHigh())
+	}
+	changePct := (bar.TradeClose()/prevClose - 1) * 100
+	highPct := (bar.TradeHigh()/prevClose - 1) * 100
+	return changePct >= l.LimitPct || highPct >= l.LimitPct
 }
 
 func (l *LimitUp) Score(bars []data.DailyBar, idx int) float64 {

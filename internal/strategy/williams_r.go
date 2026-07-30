@@ -5,8 +5,8 @@ import "quant/internal/data"
 // Williams %R 威廉指标
 // %R上穿-80 (超卖回升) → 买入；%R下穿-20 (超买回落) → 卖出
 type WilliamsR struct {
-	Period   int     // 14
-	Oversold float64 // -80
+	Period     int     // 14
+	Oversold   float64 // -80
 	Overbought float64 // -20
 }
 
@@ -36,7 +36,9 @@ func (w *WilliamsR) Score(bars []data.DailyBar, idx int) float64 {
 	if idx < w.Warmup() {
 		return 0
 	}
-	return w.pctR(bars, idx) + 50
+	// A lower %R is more oversold and should strengthen a reversal BUY,
+	// matching the score direction used by RSI and MFI.
+	return -(w.pctR(bars, idx) + 50)
 }
 
 func (w *WilliamsR) pctR(bars []data.DailyBar, idx int) float64 {

@@ -96,7 +96,7 @@ quant-go/
 ├── internal/
 │   ├── config/                 # 配置管理
 │   ├── data/                   # Tushare API + Parquet 存储
-│   ├── strategy/               # 21 个策略实现
+│   ├── strategy/               # 23 个策略实现
 │   ├── backtest/               # 回测引擎 + 绩效指标
 │   ├── signal/                 # 多策略信号聚合
 │   ├── market/                 # 市场情绪分析

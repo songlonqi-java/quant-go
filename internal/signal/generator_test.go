@@ -111,6 +111,28 @@ func TestLimitByRecommendationDropsWatchOnlyResults(t *testing.T) {
 	}
 }
 
+func TestCandidatePoolBackfillsAnIntradayRejectedLeader(t *testing.T) {
+	results := []SignalResult{
+		{Horizon: strategy.HorizonShort, Code: "000001.SZ", BuyCount: 3, TotalScore: 3.0, Confidence: 80, PositionPct: 5, IntradayLabels: []string{"高开>3%"}},
+		{Horizon: strategy.HorizonShort, Code: "000002.SZ", BuyCount: 3, TotalScore: 2.0, Confidence: 80, PositionPct: 5},
+		{Horizon: strategy.HorizonShort, Code: "000003.SZ", BuyCount: 3, TotalScore: 1.0, Confidence: 80, PositionPct: 5},
+		{Horizon: strategy.HorizonShort, Code: "000004.SZ", BuyCount: 3, TotalScore: 0.5, Confidence: 80, PositionPct: 5},
+	}
+
+	pool := SelectCandidatePool(results, 1)
+	if len(pool) != 3 {
+		t.Fatalf("len(pool) = %d, want 3", len(pool))
+	}
+	decision := ApplyPositionPolicy(pool, &market.MarketStatus{Sentiment: "偏多"})
+	if decision.QualifiedBuys != 2 {
+		t.Fatalf("QualifiedBuys = %d, want 2", decision.QualifiedBuys)
+	}
+	formal := LimitByRecommendation(pool, 1)
+	if len(formal) != 1 || formal[0].Code != "000002.SZ" {
+		t.Fatalf("formal = %+v, want 000002.SZ to backfill rejected leader", formal)
+	}
+}
+
 func TestSelectWatchlistKeepsNonFormalBuyCandidates(t *testing.T) {
 	formal := []SignalResult{
 		{

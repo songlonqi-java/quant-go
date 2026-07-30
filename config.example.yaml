@@ -13,7 +13,7 @@ fetch:
   start_year: 2021
   end_year: 2026
   stock_prefixes: ["60", "00", "001"]
-  min_market_cap: 100
+  min_market_cap: 0
 
 backtest:
   initial_capital: 100000.0
@@ -45,4 +45,6 @@ signal:
     - relative_strength
     - atr_breakout
     - trend_pullback
+    - quality_value
+    - earnings_growth
   top_n: 20

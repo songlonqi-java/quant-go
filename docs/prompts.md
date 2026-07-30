@@ -427,7 +427,7 @@ portfolio.yaml 文件在项目根目录，格式是 transactions[] 交易流水�
 ```
 查看和修改量化项目配置（config.yaml）：
 关键配置项：
-  fetch.min_market_cap    市值过滤（默认 100 亿，过滤小市值股票）
+  fetch.min_market_cap    市值过滤（默认 0，不限制；设为 100 表示过滤 100 亿以下股票）
   fetch.stock_prefixes    股票池范围（默认 60/00/001 = 上海主板/深圳主板/中小板）
   tushare.daily_call_limit  每日 API 调用上限（默认 5000）
 

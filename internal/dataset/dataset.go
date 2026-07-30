@@ -17,17 +17,18 @@ type LoadOptions struct {
 }
 
 type Dataset struct {
-	Bars            []data.DailyBar
-	CodeMap         map[string][]data.DailyBar
-	StockNames      map[string]string
-	Fundamentals    *data.FundamentalStore
-	StkLimits       *data.StkLimitStore
-	Moneyflows      *data.MoneyflowStore
-	TradingDates    []string
-	LatestDate      string
-	SkippedStale    int
-	FilteredST      int
-	FilteredNoBasic int
+	Bars              []data.DailyBar
+	CodeMap           map[string][]data.DailyBar
+	StockNames        map[string]string
+	Fundamentals      *data.FundamentalStore
+	StkLimits         *data.StkLimitStore
+	Moneyflows        *data.MoneyflowStore
+	TradingDates      []string
+	LatestDate        string
+	SkippedStale      int
+	FilteredST        int
+	FilteredNoBasic   int
+	FilteredMarketCap int
 }
 
 func Load(opts LoadOptions) (*Dataset, error) {
@@ -61,8 +62,8 @@ func Load(opts LoadOptions) (*Dataset, error) {
 	if opts.FilterST {
 		ds.filterST()
 	}
-	if opts.MinMarketCap > 0 && ds.Fundamentals != nil {
-		ds.filterMissingFundamentals()
+	if opts.MinMarketCap > 0 {
+		ds.filterByMarketCap(opts.MinMarketCap)
 	}
 
 	ds.Moneyflows, _ = fetcher.LoadMoneyflowStore()
@@ -103,6 +104,27 @@ func (d *Dataset) RecentBars(lookback int) []data.DailyBar {
 	return recent
 }
 
+// ActiveBars returns the complete history for the current, investable universe.
+// It applies the same latest-date, ST, and market-cap filters as CodeMap, so
+// market analysis cannot accidentally include securities that signal generation
+// has excluded.
+func (d *Dataset) ActiveBars() []data.DailyBar {
+	if len(d.CodeMap) == 0 {
+		return nil
+	}
+	active := make([]data.DailyBar, 0, len(d.Bars))
+	for _, bars := range d.CodeMap {
+		active = append(active, bars...)
+	}
+	sort.Slice(active, func(i, j int) bool {
+		if active[i].TradeDate == active[j].TradeDate {
+			return active[i].TsCode < active[j].TsCode
+		}
+		return active[i].TradeDate < active[j].TradeDate
+	})
+	return active
+}
+
 func (d *Dataset) PriceQuality(lookback int) data.PriceDataQuality {
 	return data.CheckPriceDataQuality(d.RecentBars(lookback))
 }
@@ -136,12 +158,20 @@ func (d *Dataset) filterST() {
 	}
 }
 
-func (d *Dataset) filterMissingFundamentals() {
+func (d *Dataset) filterByMarketCap(minMarketCap float64) {
 	for code := range d.CodeMap {
-		_, _, hasBasic := d.Fundamentals.GetLatestPE(code)
-		if !hasBasic {
+		marketCap := 0.0
+		if d.Fundamentals != nil {
+			marketCap = d.Fundamentals.GetMarketCap(code, d.LatestDate)
+		}
+		if marketCap <= 0 {
 			delete(d.CodeMap, code)
 			d.FilteredNoBasic++
+			continue
+		}
+		if marketCap < minMarketCap*10000 {
+			delete(d.CodeMap, code)
+			d.FilteredMarketCap++
 		}
 	}
 }

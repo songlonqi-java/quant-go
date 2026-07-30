@@ -159,6 +159,22 @@ func TestCalculateMetricsDefaultsInvalidTradingDays(t *testing.T) {
 	}
 }
 
+func TestCalculateMetricsKeepsCalmarNegativeForLosingStrategy(t *testing.T) {
+	result := &Result{
+		FinalEquity: 80,
+		EquityCurve: []EquityPoint{
+			{Date: "20260101", Value: 100},
+			{Date: "20260102", Value: 90},
+			{Date: "20260103", Value: 80},
+		},
+	}
+
+	metrics := CalculateMetrics(result, 100, 0.03, 252)
+	if metrics.CalmarRatio >= 0 {
+		t.Fatalf("CalmarRatio = %.2f, want negative for losing strategy", metrics.CalmarRatio)
+	}
+}
+
 func bar(date string, open, close, vol float64) data.DailyBar {
 	return data.DailyBar{
 		TsCode:    "000001.SZ",
