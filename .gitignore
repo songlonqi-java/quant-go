@@ -26,11 +26,14 @@ coverage.out
 
 # Logs and temporary files
 *.log
+*.tar
+*.gz
 tmp/
 temp/
 
 # Go build outputs
 /go-quant
+/quant-web
 /quant
 *.test
 coverage.out
