@@ -14,6 +14,7 @@ Go 语言 A 股量化工具 — 数据拉取 · 策略回测 · 信号生成 · 
 - **市场概况**：指数趋势 + 市场宽度 + 板块热度
 - **新闻热度**：新浪财经免费爬取 + 关键词提取 + 股票匹配
 - **持仓管理**：交易流水格式，自动计算持仓盈亏和历史胜率
+- **本地 Web 控制台（第一期）**：串行日终任务、执行记录与结构化日报浏览
 
 ## 快速开始
 
@@ -49,6 +50,10 @@ go build -o go-quant ./cmd/go-quant/
 
 # 盘中查看全市场宽度（均匀分批请求，默认约1分钟完成）
 ./go-quant market realtime --window 1m
+
+# 本地 Web 控制台（默认仅监听 127.0.0.1）
+go build -o quant-web ./cmd/quant-web/
+./quant-web -c config.yaml
 ```
 
 ## 命令
@@ -65,6 +70,7 @@ go build -o go-quant ./cmd/go-quant/
 | `./go-quant forward validate` | 回填前向测试 1/3/5 日收益 |
 | `./go-quant forward migrate` | 迁移旧版前向测试 CSV schema |
 | `./go-quant list` | 查看所有策略 |
+| `./quant-web` | 本地页面：启动日终任务并查看报告 |
 
 详见 [docs/commands.md](docs/commands.md)
 
@@ -110,6 +116,7 @@ transactions:
 ```
 quant-go/
 ├── cmd/go-quant/main.go        # CLI 入口
+├── cmd/quant-web/main.go        # 本地 Web 入口
 ├── internal/
 │   ├── config/                 # 配置管理
 │   ├── data/                   # Tushare API + Parquet 存储
@@ -134,4 +141,5 @@ quant-go/
 | [docs/strategies.md](docs/strategies.md) | 全部策略详解 |
 | [docs/portfolio.md](docs/portfolio.md) | 持仓管理流程 |
 | [docs/prompts.md](docs/prompts.md) | AI 提示语速查 |
+| [docs/web.md](docs/web.md) | 本地 Web 控制台第一期 |
 | [agent.md](agent.md) | Agent 开发指南 |

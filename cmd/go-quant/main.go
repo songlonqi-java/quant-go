@@ -17,11 +17,11 @@ import (
 	"quant/internal/market"
 	"quant/internal/portfolio"
 	"quant/internal/realtime"
-	"quant/internal/sector"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 	"quant/internal/validation"
 	"quant/internal/value"
+	"quant/internal/workflow/sectorbuild"
 	signalworkflow "quant/internal/workflow/signal"
 
 	"github.com/spf13/cobra"
@@ -142,39 +142,18 @@ func sectorCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("加载日线数据失败: %w", err)
 			}
-			bars = applyStkLimitStore(data.NewFetcher(nil, cfg.Data.RawDir, nil), bars)
-			codeMap := data.GroupByCode(bars)
 			dates := resolveSectorBuildDates(bars, today, date, startDate, endDate)
 			if len(dates) == 0 {
 				return fmt.Errorf("没有可构建的交易日期")
 			}
-
-			memberships, err := sector.LoadIndustryMemberships(cfg.Data.RawDir)
+			built, err := sectorbuild.BuildDates(cfg.Data.RawDir, dates)
 			if err != nil {
-				return fmt.Errorf("加载行业归属失败: %w", err)
-			}
-			fetcher := data.NewFetcher(nil, cfg.Data.RawDir, nil)
-			moneyflows, _ := fetcher.LoadMoneyflowStore()
-			fundamentals, err := fetcher.LoadDailyBasicStore()
-			if err != nil {
-				fmt.Printf("  警告: 加载日度估值失败: %v\n", err)
-			}
-
-			rows := sector.Analyze(codeMap, memberships, moneyflows, sector.AnalyzeOptions{
-				Dates:        dates,
-				Fundamentals: fundamentals,
-			})
-			if len(rows) == 0 {
-				return fmt.Errorf("没有生成板块数据")
-			}
-			if err := sector.WriteSectorDaily(cfg.Data.RawDir, rows); err != nil {
-				return fmt.Errorf("写入板块数据失败: %w", err)
+				return err
 			}
 
 			fmt.Printf(">>> 板块日度数据已写入: %d 行, 日期 %s ~ %s → %s\n",
-				len(rows), dates[0], dates[len(dates)-1], cfg.Data.RawDir+"/sector_daily")
-			report := sector.NewReport(filterSectorRowsByDate(rows, dates[len(dates)-1]))
-			report.Print()
+				built.Rows, dates[0], dates[len(dates)-1], cfg.Data.RawDir+"/sector_daily")
+			built.Report.Print()
 			return nil
 		},
 	}
@@ -950,16 +929,6 @@ func resolveSectorBuildDates(bars []data.DailyBar, today bool, date, startDate, 
 		out = append(out, d)
 	}
 	return out
-}
-
-func filterSectorRowsByDate(rows []data.SectorDaily, date string) []data.SectorDaily {
-	filtered := make([]data.SectorDaily, 0, len(rows))
-	for _, row := range rows {
-		if row.TradeDate == date {
-			filtered = append(filtered, row)
-		}
-	}
-	return filtered
 }
 
 func sortedCodes(codeMap map[string][]data.DailyBar) []string {
