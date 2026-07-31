@@ -17,6 +17,7 @@ import (
 	"quant/internal/sector"
 	signals "quant/internal/signal"
 	"quant/internal/strategy"
+	"quant/internal/validation"
 )
 
 type Options struct {
@@ -51,6 +52,8 @@ type Result struct {
 	RealtimeErr      error
 	ForwardErr       error
 	SectorErr        error
+	ValidationErr    error
+	ValidationStore  *validation.Store
 	PriceQuality     data.PriceDataQuality
 }
 
@@ -120,6 +123,27 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	candidatePool := signals.SelectCandidatePool(allSignals, topN)
 	watchPool := signals.SelectWatchlist(allSignals, candidatePool, opts.WatchN*3)
+	if cfg.Validation.Enabled {
+		path := validation.DefaultPath(cfg.Data.RawDir, cfg.Validation.Path)
+		store, err := validation.Load(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				result.ValidationErr = fmt.Errorf("尚未构建历史验证证据（运行 go-quant validate build）")
+			} else {
+				result.ValidationErr = err
+			}
+		} else {
+			policy := validation.Policy{
+				MinSamples:           cfg.Validation.MinSamples,
+				MinPositiveFolds:     cfg.Validation.MinPositiveFolds,
+				MinExpectedReturnPct: cfg.Validation.MinExpectedReturn,
+				PriorSamples:         cfg.Validation.PriorSamples,
+			}
+			candidatePool = validation.Annotate(candidatePool, store, policy, true)
+			watchPool = validation.Annotate(watchPool, store, policy, false)
+			result.ValidationStore = store
+		}
+	}
 
 	if opts.Realtime {
 		quoteMap, err := fetchRealtimeQuotes(opts.RealtimeProvider, realtimeTargets(candidatePool, watchPool), result.PortfolioSummary)
@@ -134,6 +158,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	result.PositionDecision = signals.ApplyPositionPolicy(candidatePool, result.MarketStatus)
+	candidatePool = validation.Allocate(candidatePool)
 	result.Signals = signals.LimitByRecommendation(candidatePool, topN)
 	watchSource := append(candidatePool, watchPool...)
 	result.Watchlist = signals.SelectWatchlist(watchSource, result.Signals, opts.WatchN)

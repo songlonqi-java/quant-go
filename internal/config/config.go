@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	Tushare  TushareConfig  `yaml:"tushare"`
-	Data     DataConfig     `yaml:"data"`
-	Fetch    FetchConfig    `yaml:"fetch"`
-	Backtest BacktestConfig `yaml:"backtest"`
-	Signal   SignalConfig   `yaml:"signal"`
+	Tushare    TushareConfig    `yaml:"tushare"`
+	Data       DataConfig       `yaml:"data"`
+	Fetch      FetchConfig      `yaml:"fetch"`
+	Backtest   BacktestConfig   `yaml:"backtest"`
+	Signal     SignalConfig     `yaml:"signal"`
+	Validation ValidationConfig `yaml:"validation"`
 }
 
 type TushareConfig struct {
@@ -47,6 +48,18 @@ type BacktestConfig struct {
 type SignalConfig struct {
 	DefaultStrategies []string `yaml:"default_strategies"`
 	TopN              int      `yaml:"top_n"`
+}
+
+// ValidationConfig controls the out-of-sample evidence required before a
+// historical signal may be promoted into the formal recommendation list.
+// Path is relative to data.raw_dir when it is not absolute.
+type ValidationConfig struct {
+	Enabled           bool    `yaml:"enabled"`
+	Path              string  `yaml:"path"`
+	MinSamples        int     `yaml:"min_samples"`
+	MinPositiveFolds  int     `yaml:"min_positive_folds"`
+	MinExpectedReturn float64 `yaml:"min_expected_return_pct"`
+	PriorSamples      float64 `yaml:"prior_samples"`
 }
 
 var defaultConfig = Config{
@@ -84,6 +97,14 @@ var defaultConfig = Config{
 			"trend_pullback", "quality_value", "earnings_growth",
 		},
 		TopN: 20,
+	},
+	Validation: ValidationConfig{
+		Enabled:           true,
+		Path:              "validation/evidence.json",
+		MinSamples:        30,
+		MinPositiveFolds:  2,
+		MinExpectedReturn: 0,
+		PriorSamples:      20,
 	},
 }
 

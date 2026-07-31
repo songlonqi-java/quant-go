@@ -1,0 +1,92 @@
+package signal
+
+import (
+	"fmt"
+	"os"
+	"text/tabwriter"
+
+	"quant/internal/strategy"
+)
+
+// HistoricalEvidence is the out-of-sample evidence attached to a candidate by
+// the validation module. Returns are percentages measured from a feasible next
+// open entry to the configured horizon close, net of configured trading costs.
+// SuggestedWeightPct is a share of the deployable portfolio budget, not a
+// guarantee that the portfolio should be fully invested.
+type HistoricalEvidence struct {
+	Available          bool
+	Eligible           bool
+	Enforced           bool
+	Basis              string
+	Samples            int
+	Wins               int
+	WinRatePct         float64
+	ExpectedReturnPct  float64
+	AverageWinPct      float64
+	AverageLossPct     float64
+	VolatilityPct      float64
+	MaxDrawdownPct     float64
+	PositiveFolds      int
+	FoldCount          int
+	SuggestedWeightPct float64
+	Status             string
+}
+
+// PrintHistoricalEvidence prints the evidence used to qualify and size the
+// formal candidates and watchlist. It is intentionally separate from the main
+// signal table so callers can see whether a candidate was rejected by history,
+// market risk, or intraday execution constraints.
+func PrintHistoricalEvidence(results, watchlist []SignalResult) {
+	rows := append(append([]SignalResult{}, results...), watchlist...)
+	count := 0
+	for _, r := range rows {
+		if r.HistoricalEvidence != nil {
+			count++
+		}
+	}
+	if count == 0 {
+		return
+	}
+	fmt.Println("\n========== 历史样本外证据 ==========")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "周期\t代码\t依据\t样本\t胜率\t期望收益\t最大回撤\t正收益折\t权重\t状态")
+	for _, r := range rows {
+		e := r.HistoricalEvidence
+		if e == nil {
+			continue
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%.1f%%\t%+.2f%%\t%.2f%%\t%d/%d\t%.1f%%\t%s\n",
+			strategy.HorizonLabel(r.Horizon), r.Code, e.Basis, e.Samples, e.WinRatePct,
+			e.ExpectedReturnPct, e.MaxDrawdownPct, e.PositiveFolds, e.FoldCount,
+			e.SuggestedWeightPct, e.Status)
+	}
+	w.Flush()
+}
+
+func formatEvidenceSamples(r SignalResult) string {
+	if r.HistoricalEvidence == nil || !r.HistoricalEvidence.Available {
+		return "-"
+	}
+	return fmt.Sprintf("%d", r.HistoricalEvidence.Samples)
+}
+
+func formatEvidenceWinRate(r SignalResult) string {
+	if r.HistoricalEvidence == nil || !r.HistoricalEvidence.Available {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%%", r.HistoricalEvidence.WinRatePct)
+}
+
+func formatEvidenceExpectedReturn(r SignalResult) string {
+	if r.HistoricalEvidence == nil || !r.HistoricalEvidence.Available {
+		return "-"
+	}
+	return fmt.Sprintf("%+.2f%%", r.HistoricalEvidence.ExpectedReturnPct)
+}
+
+func formatEvidenceWeight(r SignalResult) string {
+	if r.HistoricalEvidence == nil || r.HistoricalEvidence.SuggestedWeightPct <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%%", r.HistoricalEvidence.SuggestedWeightPct)
+}

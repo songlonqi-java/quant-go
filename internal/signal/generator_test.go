@@ -248,6 +248,20 @@ func TestApplyPositionPolicyAllowsBearishProbeWithMoneyflowConfirmation(t *testi
 	}
 }
 
+func TestApplyPositionPolicyRejectsCandidateWithoutRequiredHistoricalEvidence(t *testing.T) {
+	results := []SignalResult{{
+		Horizon: strategy.HorizonShort, BuyCount: 3, TotalScore: 2, Confidence: 80, PositionPct: 5,
+		HistoricalEvidence: &HistoricalEvidence{Available: true, Enforced: true, Eligible: false, Status: "历史验证不足"},
+	}}
+	decision := ApplyPositionPolicy(results, &market.MarketStatus{Sentiment: "中性震荡"})
+	if decision.QualifiedBuys != 0 || decision.Action != PositionActionCash {
+		t.Fatalf("decision = %#v, want no qualified buy and cash", decision)
+	}
+	if !results[0].Suppressed || results[0].PositionPct != 0 {
+		t.Fatalf("result = %#v, want suppressed candidate", results[0])
+	}
+}
+
 func TestBoundedContributionTreatsNonFiniteScoreAsNeutral(t *testing.T) {
 	for _, score := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
 		if got := boundedContribution(score); got != 1 {

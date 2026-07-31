@@ -26,6 +26,7 @@ type SignalResult struct {
 	TotalScore              float64
 	Confidence              float64
 	PositionPct             float64
+	MarketSentiment         string
 	HasMoneyflow            bool
 	MoneyflowNetAmount      float64
 	LargeMoneyflowNetAmount float64
@@ -41,6 +42,7 @@ type SignalResult struct {
 	SuppressionReason       string
 	RiskLabels              []string
 	Reasons                 []string
+	HistoricalEvidence      *HistoricalEvidence
 }
 
 type SignalDetail struct {
@@ -96,6 +98,9 @@ func generateForHorizon(barsMap map[string][]data.DailyBar, strategies []strateg
 			Close:       bars[lastIdx].TradeClose(),
 			Strategies:  make(map[string]SignalDetail),
 			GroupScores: make(map[string]float64),
+		}
+		if marketStatus != nil {
+			r.MarketSentiment = marketStatus.Sentiment
 		}
 
 		for _, s := range strategies {

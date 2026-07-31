@@ -25,38 +25,39 @@ type Reporter struct {
 }
 
 type jsonOutput struct {
-	Rank           int                `json:"rank"`
-	Horizon        strategy.Horizon   `json:"horizon"`
-	HorizonLabel   string             `json:"horizon_label"`
-	Code           string             `json:"code"`
-	Name           string             `json:"name"`
-	Date           string             `json:"date"`
-	Close          float64            `json:"close"`
-	BuySignals     int                `json:"buy_signals"`
-	SellSignals    int                `json:"sell_signals"`
-	TotalScore     float64            `json:"total_score"`
-	RawScore       float64            `json:"raw_score"`
-	Confidence     float64            `json:"confidence"`
-	PositionPct    float64            `json:"position_pct"`
-	HasMoneyflow   bool               `json:"has_moneyflow"`
-	MoneyflowNet   float64            `json:"moneyflow_net_amount"`
-	LargeNet       float64            `json:"large_moneyflow_net_amount"`
-	SectorName     string             `json:"sector_name,omitempty"`
-	SectorTags     []string           `json:"sector_tags,omitempty"`
-	SectorChg1     float64            `json:"sector_chg1,omitempty"`
-	HasRealtime    bool               `json:"has_realtime"`
-	RealtimePrice  float64            `json:"realtime_price"`
-	RealtimePct    float64            `json:"realtime_change_pct"`
-	RealtimeAt     string             `json:"realtime_update_at"`
-	IntradayLabels []string           `json:"intraday_labels"`
-	Suppressed     bool               `json:"suppressed"`
-	SuppressReason string             `json:"suppression_reason"`
-	RiskLabels     []string           `json:"risk_labels"`
-	Reasons        []string           `json:"reasons"`
-	WatchReason    string             `json:"watch_reason,omitempty"`
-	Recommendation string             `json:"recommendation"`
-	Strategies     map[string]string  `json:"strategies"`
-	GroupScores    map[string]float64 `json:"group_scores"`
+	Rank               int                 `json:"rank"`
+	Horizon            strategy.Horizon    `json:"horizon"`
+	HorizonLabel       string              `json:"horizon_label"`
+	Code               string              `json:"code"`
+	Name               string              `json:"name"`
+	Date               string              `json:"date"`
+	Close              float64             `json:"close"`
+	BuySignals         int                 `json:"buy_signals"`
+	SellSignals        int                 `json:"sell_signals"`
+	TotalScore         float64             `json:"total_score"`
+	RawScore           float64             `json:"raw_score"`
+	Confidence         float64             `json:"confidence"`
+	PositionPct        float64             `json:"position_pct"`
+	HasMoneyflow       bool                `json:"has_moneyflow"`
+	MoneyflowNet       float64             `json:"moneyflow_net_amount"`
+	LargeNet           float64             `json:"large_moneyflow_net_amount"`
+	SectorName         string              `json:"sector_name,omitempty"`
+	SectorTags         []string            `json:"sector_tags,omitempty"`
+	SectorChg1         float64             `json:"sector_chg1,omitempty"`
+	HasRealtime        bool                `json:"has_realtime"`
+	RealtimePrice      float64             `json:"realtime_price"`
+	RealtimePct        float64             `json:"realtime_change_pct"`
+	RealtimeAt         string              `json:"realtime_update_at"`
+	IntradayLabels     []string            `json:"intraday_labels"`
+	Suppressed         bool                `json:"suppressed"`
+	SuppressReason     string              `json:"suppression_reason"`
+	RiskLabels         []string            `json:"risk_labels"`
+	Reasons            []string            `json:"reasons"`
+	WatchReason        string              `json:"watch_reason,omitempty"`
+	Recommendation     string              `json:"recommendation"`
+	Strategies         map[string]string   `json:"strategies"`
+	GroupScores        map[string]float64  `json:"group_scores"`
+	HistoricalEvidence *HistoricalEvidence `json:"historical_evidence,omitempty"`
 }
 
 func NewReporter(format string) *Reporter {
@@ -130,7 +131,7 @@ func (r *Reporter) printTableWithWatch(results []SignalResult, watchlist []Signa
 
 func (r *Reporter) printCSV(results []SignalResult) error {
 	w := csv.NewWriter(os.Stdout)
-	w.Write([]string{"排名", "周期", "代码", "名称", "板块", "板块涨跌%", "板块标签", "日期", "收盘价", "实时价", "盘中涨跌%", "实时更新时间", "盘中标签", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "资金净额(万)", "大单净额(万)", "风险标签", "是否过滤", "过滤原因", "建议", "触发策略"})
+	w.Write([]string{"排名", "周期", "代码", "名称", "板块", "板块涨跌%", "板块标签", "日期", "收盘价", "实时价", "盘中涨跌%", "实时更新时间", "盘中标签", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "资金净额(万)", "大单净额(万)", "历史样本", "历史胜率", "历史期望收益", "建议权重", "风险标签", "是否过滤", "过滤原因", "建议", "触发策略"})
 	for i, res := range results {
 		w.Write([]string{
 			fmt.Sprintf("%d", i+1),
@@ -153,6 +154,10 @@ func (r *Reporter) printCSV(results []SignalResult) error {
 			fmt.Sprintf("%.1f%%", res.PositionPct),
 			formatCSVAmount(res.HasMoneyflow, res.MoneyflowNetAmount),
 			formatCSVAmount(res.HasMoneyflow, res.LargeMoneyflowNetAmount),
+			formatEvidenceSamples(res),
+			formatEvidenceWinRate(res),
+			formatEvidenceExpectedReturn(res),
+			formatEvidenceWeight(res),
 			strings.Join(res.RiskLabels, ";"),
 			fmt.Sprintf("%t", res.Suppressed),
 			res.SuppressionReason,
@@ -166,7 +171,7 @@ func (r *Reporter) printCSV(results []SignalResult) error {
 
 func (r *Reporter) printCSVWithWatch(results []SignalResult, watchlist []SignalResult) error {
 	w := csv.NewWriter(os.Stdout)
-	w.Write([]string{"类别", "排名", "周期", "代码", "名称", "板块", "板块涨跌%", "板块标签", "日期", "收盘价", "实时价", "盘中涨跌%", "实时更新时间", "盘中标签", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "资金净额(万)", "大单净额(万)", "风险标签", "是否过滤", "过滤原因", "观察原因", "建议", "触发策略"})
+	w.Write([]string{"类别", "排名", "周期", "代码", "名称", "板块", "板块涨跌%", "板块标签", "日期", "收盘价", "实时价", "盘中涨跌%", "实时更新时间", "盘中标签", "买入信号", "卖出信号", "综合评分", "置信度", "建议仓位", "资金净额(万)", "大单净额(万)", "历史样本", "历史胜率", "历史期望收益", "建议权重", "风险标签", "是否过滤", "过滤原因", "观察原因", "建议", "触发策略"})
 	writeCSVRows(w, "正式信号", results, false)
 	writeCSVRows(w, "观察机会", watchlist, true)
 	w.Flush()
@@ -220,6 +225,10 @@ func writeCSVRows(w *csv.Writer, category string, results []SignalResult, includ
 			fmt.Sprintf("%.1f%%", res.PositionPct),
 			formatCSVAmount(res.HasMoneyflow, res.MoneyflowNetAmount),
 			formatCSVAmount(res.HasMoneyflow, res.LargeMoneyflowNetAmount),
+			formatEvidenceSamples(res),
+			formatEvidenceWinRate(res),
+			formatEvidenceExpectedReturn(res),
+			formatEvidenceWeight(res),
 			strings.Join(res.RiskLabels, ";"),
 			fmt.Sprintf("%t", res.Suppressed),
 			res.SuppressionReason,
@@ -238,37 +247,38 @@ func toJSONOutput(results []SignalResult, includeWatchReason bool) []jsonOutput 
 			strats[name] = detail.Signal.String()
 		}
 		item := jsonOutput{
-			Rank:           i + 1,
-			Horizon:        r.Horizon,
-			HorizonLabel:   strategy.HorizonLabel(r.Horizon),
-			Code:           r.Code,
-			Name:           r.Name,
-			Date:           r.Date,
-			Close:          r.Close,
-			BuySignals:     r.BuyCount,
-			SellSignals:    r.SellCount,
-			TotalScore:     r.TotalScore,
-			RawScore:       r.RawScore,
-			Confidence:     r.Confidence,
-			PositionPct:    r.PositionPct,
-			HasMoneyflow:   r.HasMoneyflow,
-			MoneyflowNet:   r.MoneyflowNetAmount,
-			LargeNet:       r.LargeMoneyflowNetAmount,
-			SectorName:     r.SectorName,
-			SectorTags:     r.SectorTags,
-			SectorChg1:     r.SectorChg1,
-			HasRealtime:    r.HasRealtime,
-			RealtimePrice:  r.RealtimePrice,
-			RealtimePct:    r.RealtimeChangePct,
-			RealtimeAt:     r.RealtimeUpdateAt,
-			IntradayLabels: r.IntradayLabels,
-			Suppressed:     r.Suppressed,
-			SuppressReason: r.SuppressionReason,
-			RiskLabels:     r.RiskLabels,
-			Reasons:        r.Reasons,
-			Recommendation: r.Recommendation(),
-			Strategies:     strats,
-			GroupScores:    r.GroupScores,
+			Rank:               i + 1,
+			Horizon:            r.Horizon,
+			HorizonLabel:       strategy.HorizonLabel(r.Horizon),
+			Code:               r.Code,
+			Name:               r.Name,
+			Date:               r.Date,
+			Close:              r.Close,
+			BuySignals:         r.BuyCount,
+			SellSignals:        r.SellCount,
+			TotalScore:         r.TotalScore,
+			RawScore:           r.RawScore,
+			Confidence:         r.Confidence,
+			PositionPct:        r.PositionPct,
+			HasMoneyflow:       r.HasMoneyflow,
+			MoneyflowNet:       r.MoneyflowNetAmount,
+			LargeNet:           r.LargeMoneyflowNetAmount,
+			SectorName:         r.SectorName,
+			SectorTags:         r.SectorTags,
+			SectorChg1:         r.SectorChg1,
+			HasRealtime:        r.HasRealtime,
+			RealtimePrice:      r.RealtimePrice,
+			RealtimePct:        r.RealtimeChangePct,
+			RealtimeAt:         r.RealtimeUpdateAt,
+			IntradayLabels:     r.IntradayLabels,
+			Suppressed:         r.Suppressed,
+			SuppressReason:     r.SuppressionReason,
+			RiskLabels:         r.RiskLabels,
+			Reasons:            r.Reasons,
+			Recommendation:     r.Recommendation(),
+			Strategies:         strats,
+			GroupScores:        r.GroupScores,
+			HistoricalEvidence: r.HistoricalEvidence,
 		}
 		if includeWatchReason {
 			item.WatchReason = formatWatchReason(r)

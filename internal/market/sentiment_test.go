@@ -1,6 +1,8 @@
 package market
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 
 	"quant/internal/data"
@@ -39,6 +41,25 @@ func TestAnalyzeTradingStatsCapturesAShareRisk(t *testing.T) {
 	}
 	if !contains(ms.RiskFlags, "亏钱效应") || !contains(ms.RiskFlags, "跌停扩散") {
 		t.Fatalf("RiskFlags = %v, want 亏钱效应 and 跌停扩散", ms.RiskFlags)
+	}
+}
+
+func TestBuildHistoricalStatusDoesNotUseFutureBars(t *testing.T) {
+	bars := make([]data.DailyBar, 0, 70)
+	for i := 0; i < 70; i++ {
+		price := 10 + float64(i)*0.1
+		bars = append(bars, marketBar("000001.SZ", fmt.Sprintf("2025%04d", i+1), price, price+0.1, price-0.1, price))
+	}
+	base := BuildHistoricalStatus(map[string][]data.DailyBar{"000001.SZ": bars})
+
+	changed := append([]data.DailyBar(nil), bars...)
+	changed[65].Close = 1000
+	changed[65].RawClose = 1000
+	withFutureChange := BuildHistoricalStatus(map[string][]data.DailyBar{"000001.SZ": changed})
+
+	date := bars[60].TradeDate
+	if !reflect.DeepEqual(base[date], withFutureChange[date]) {
+		t.Fatalf("status on %s changed after editing a future bar:\nbase=%+v\nchanged=%+v", date, base[date], withFutureChange[date])
 	}
 }
 

@@ -67,6 +67,8 @@
 `signal` 会自动把每个周期前 5 个合格买入候选写入 `data/forward_test/`。短线验证 1/3/5 日，中线验证 10/20/40 日，长线验证 60/120/250 日。如果仓位策略判断应空仓，会写入一条 `CASH` 记录，表示当天不新增买入。
 如果最近两个交易日缺少真实价字段，`signal` 会跳过 `limit_up` 并给出警告；重新拉取行情后会恢复。如果本地有 `stk_limit` 数据，涨停策略会优先使用精确涨停价判断。
 
+当 `data/raw/validation/evidence.json` 已由 `validate build` 生成时，正式买入还必须通过历史样本量、样本外正收益折数与收缩后期望收益门槛；未通过的结果仅保留在观察机会中。表格、CSV 和 JSON 都会带上相应的历史证据和建议权重。若证据文件缺失，命令会提示先构建，但不会中断日常信号输出。
+
 当使用 `PrintWithWatch` 的 CLI 输出时，JSON 会返回 `{ "signals": [...], "watchlist": [...] }`，CSV 会增加 `类别` 和 `观察原因` 字段，用于区分正式信号和观察机会。
 
 ---
@@ -86,6 +88,28 @@
 回测成交口径：T 日收盘产生信号，T+1 开盘成交，并考虑基础滑点、手续费以及开盘涨跌停不可成交约束。输出包含样本平均/中位收益、正收益股票数、收益区间，以及单只最佳表现。如果本地有 `stk_limit` 数据，会优先使用精确涨跌停价；否则使用 `backtest.limit_pct` 近似判断。
 
 旧版行情 Parquet 没有 `raw_open/raw_high/raw_low/raw_close/adj_factor` 字段。回测默认拒绝这类数据，避免把前复权价当真实成交价；重新执行 `fetch` 可补齐。
+
+---
+
+## `go-quant validate build` — 历史推荐资格验证
+
+```bash
+./go-quant validate build
+./go-quant validate build --start 20200101 --end 20251231 --workers 16
+./go-quant validate build -s macd,roc,bull_flag
+```
+
+该命令回放“策略信号 → 市场仓位策略 → 次日可成交入场”完整链路，在历史后半段按时间顺序切分样本外折，并按短、中、长周期记录策略组合与市场状态的胜率、期望收益、波动和最大回撤。入场会拒绝一字涨停、高开超过 3% 和跌破前低等不可执行场景，退出也不会越过指定回测截止日。
+
+证据默认写入 `data/raw/validation/evidence.json`，并被 `signal` 读取。数据补齐、策略或参数变更后应重新构建。历史回放仍可能受本地股票池缺少退市证券影响，不能替代持续的 `forward validate` 前向测试。
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `-s, --strategy` | 回放策略，默认使用 `signal.default_strategies` | `-s macd,roc` |
+| `--start / --end` | 限定回放信号日期 | `--start 20200101 --end 20251231` |
+| `--workers` | 并行回放工作数，默认 GOMAXPROCS | `--workers 16` |
+| `--output` | 自定义证据文件路径 | `--output /tmp/evidence.json` |
+| `--allow-adjusted-trades` | 允许旧数据用复权价近似成交价，仅临时排查使用 | `--allow-adjusted-trades` |
 
 ---
 

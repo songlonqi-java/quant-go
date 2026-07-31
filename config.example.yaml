@@ -48,3 +48,14 @@ signal:
     - quality_value
     - earnings_growth
   top_n: 20
+
+# 正式买入候选需要有历史样本外证据。先运行
+# ./go-quant validate build
+# 生成 data/raw/validation/evidence.json。
+validation:
+  enabled: true
+  path: "validation/evidence.json"
+  min_samples: 30
+  min_positive_folds: 2
+  min_expected_return_pct: 0
+  prior_samples: 20

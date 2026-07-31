@@ -18,6 +18,7 @@ import (
 	"quant/internal/sector"
 	"quant/internal/signal"
 	"quant/internal/strategy"
+	"quant/internal/validation"
 	signalworkflow "quant/internal/workflow/signal"
 
 	"github.com/spf13/cobra"
@@ -41,6 +42,7 @@ func main() {
 	rootCmd.AddCommand(backtestCmd())
 	rootCmd.AddCommand(signalCmd())
 	rootCmd.AddCommand(forwardCmd())
+	rootCmd.AddCommand(validationCmd())
 	rootCmd.AddCommand(analyzeCmd())
 	rootCmd.AddCommand(listCmd())
 
@@ -458,6 +460,11 @@ func signalCmd() *cobra.Command {
 			} else if result.RealtimeLoaded > 0 && format == "table" {
 				fmt.Printf(">>> 实时行情已加载: %d 只\n", result.RealtimeLoaded)
 			}
+			if result.ValidationErr != nil && format == "table" {
+				fmt.Printf("历史验证: %v\n", result.ValidationErr)
+			} else if result.ValidationStore != nil && format == "table" {
+				fmt.Printf(">>> 历史验证已加载: 样本外统计 %d 桶，区间 %s ~ %s\n", len(result.ValidationStore.Stats), result.ValidationStore.StartDate, result.ValidationStore.EndDate)
+			}
 
 			if format == "table" {
 				signal.PrintPositionDecision(result.PositionDecision)
@@ -475,7 +482,13 @@ func signalCmd() *cobra.Command {
 				fmt.Printf("前向测试记录失败: %v\n", result.ForwardErr)
 			}
 
-			return reporter.PrintWithWatch(result.Signals, result.Watchlist)
+			if err := reporter.PrintWithWatch(result.Signals, result.Watchlist); err != nil {
+				return err
+			}
+			if format == "table" {
+				signal.PrintHistoricalEvidence(result.Signals, result.Watchlist)
+			}
+			return nil
 		},
 	}
 
@@ -534,6 +547,90 @@ func forwardCmd() *cobra.Command {
 	cmd.AddCommand(validateCmd)
 	cmd.AddCommand(migrateCmd)
 	return cmd
+}
+
+func validationCmd() *cobra.Command {
+	var (
+		strategyNames []string
+		startDate     string
+		endDate       string
+		outputPath    string
+		workers       int
+		allowAdjusted bool
+	)
+	cmd := &cobra.Command{
+		Use:   "validate",
+		Short: "构建和查看历史样本外验证证据",
+	}
+	buildCmd := &cobra.Command{
+		Use:   "build",
+		Short: "回放全历史信号并生成推荐资格、胜率和权重证据",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			ds, err := dataset.Load(dataset.LoadOptions{RawDir: cfg.Data.RawDir})
+			if err != nil {
+				return err
+			}
+			if q := data.CheckPriceDataQuality(ds.Bars); !q.HasCompleteRawPrices() && !allowAdjusted {
+				return fmt.Errorf("%s；历史验证需要真实成交价，请重新拉取行情数据，或临时使用 --allow-adjusted-trades", q.Summary())
+			}
+			names := strategyNames
+			if len(names) == 0 {
+				names = cfg.Signal.DefaultStrategies
+			}
+			strategies, err := registeredStrategies(names)
+			if err != nil {
+				return err
+			}
+			path := outputPath
+			if path == "" {
+				path = validation.DefaultPath(cfg.Data.RawDir, cfg.Validation.Path)
+			}
+			store, err := validation.Build(validation.BuildOptions{
+				CodeMap:      ds.CodeMap,
+				StockNames:   ds.StockNames,
+				Strategies:   strategies,
+				Fundamentals: ds.Fundamentals,
+				Moneyflows:   ds.Moneyflows,
+				Commission:   cfg.Backtest.Commission,
+				Slippage:     cfg.Backtest.Slippage,
+				Workers:      workers,
+				StartDate:    startDate,
+				EndDate:      endDate,
+			})
+			if err != nil {
+				return err
+			}
+			if err := store.Save(path); err != nil {
+				return err
+			}
+			fmt.Printf("历史验证完成: %s\n", path)
+			fmt.Printf("回放区间: %s ~ %s，样本外折数: %d\n", store.StartDate, store.EndDate, len(store.Folds))
+			fmt.Printf("信号快照: %d，实际可成交样本: %d，跳过: %d，统计桶: %d\n", store.ScannedSignals, store.FeasibleTrades, store.SkippedTrades, len(store.Stats))
+			return nil
+		},
+	}
+	buildCmd.Flags().StringSliceVarP(&strategyNames, "strategy", "s", nil, "回放策略（默认使用 signal.default_strategies）")
+	buildCmd.Flags().StringVar(&startDate, "start", "", "回放起始日期 YYYYMMDD")
+	buildCmd.Flags().StringVar(&endDate, "end", "", "回放结束日期 YYYYMMDD")
+	buildCmd.Flags().StringVar(&outputPath, "output", "", "验证结果路径（默认 data.raw_dir/validation/evidence.json）")
+	buildCmd.Flags().IntVar(&workers, "workers", 0, "回放并行工作数（默认 GOMAXPROCS）")
+	buildCmd.Flags().BoolVar(&allowAdjusted, "allow-adjusted-trades", false, "允许用复权价近似历史成交价（仅用于旧数据临时验证）")
+	cmd.AddCommand(buildCmd)
+	return cmd
+}
+
+func registeredStrategies(names []string) ([]strategy.Strategy, error) {
+	registry := strategy.DefaultRegistry()
+	selected := make([]strategy.Strategy, 0, len(names))
+	for _, name := range names {
+		s, ok := registry.Get(name)
+		if !ok {
+			return nil, fmt.Errorf("未知策略: %s", name)
+		}
+		selected = append(selected, s)
+	}
+	return selected, nil
 }
 
 func analyzeCmd() *cobra.Command {

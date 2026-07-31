@@ -14,6 +14,8 @@
 
 `internal/forward` 负责前向测试记录和验证。CSV schema 与不同周期验证目标集中在 `schema.go`。
 
+`internal/validation` 负责全量历史回放、样本外折统计、可成交约束与证据读取。它只暴露构建、加载和给候选添加证据的接口；信号工作流据此决定正式买入资格和风险预算，不在 CLI 中重放策略。
+
 `internal/data` 负责 Tushare/Sina 之外的本地存储、Tushare 客户端和数据拉取。`Fetcher` 仍保持原接口，但内部按数据域逐步拆文件。
 
 ## 重构原则
