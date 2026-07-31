@@ -89,12 +89,10 @@ var defaultConfig = Config{
 	Signal: SignalConfig{
 		DefaultStrategies: []string{
 			"ma_crossover", "macd", "rsi", "bollinger",
-			"volume_breakout", "value_ma60", "etf_rotation",
-			"dividend_deviation", "bull_flag",
+			"volume_breakout", "bull_flag",
 			"kdj", "williams_r", "donchian", "mfi",
 			"sar", "roc", "ma_sticky", "limit_up",
-			"bottom_reversal", "relative_strength", "atr_breakout",
-			"trend_pullback", "quality_value", "earnings_growth",
+			"relative_strength", "atr_breakout", "trend_pullback",
 		},
 		TopN: 20,
 	},

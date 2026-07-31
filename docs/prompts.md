@@ -17,6 +17,9 @@
   data/raw/daily_basic/*.parquet  PE/PB/市值/股息率/换手率
   data/raw/fina/*.parquet          财务数据（ROE/利润表）
   data/raw/index/*.parquet         指数行情（上证/深证/沪深300）
+  data/raw/sector_daily/*.parquet  行业日度数据（含聚合 PE_TTM/PB）
+  data/raw/value/*.json            月度价值候选池快照
+  data/raw/value/review/*.json     季度价值复核结果
   data/raw/news/latest.parquet     新闻热度缓存
   data/raw/reports/                 信号报告导出目录（json/csv）
   data/forward_test/                前向测试记录
@@ -24,6 +27,8 @@
 关键命令：
   ./go-quant fetch   拉取数据（日线/涨跌停/资金/基本面/财务/指数）
   ./go-quant signal  生成买卖信号（默认东方财富实时行情、失败时新浪降级做盘中校验）
+  ./go-quant value monthly   月度价值筛选（独立于日常信号）
+  ./go-quant value quarterly 季度复核价值候选池（独立于日常信号）
   ./go-quant backtest   回测策略
   ./go-quant forward validate   验证前向测试收益
   ./go-quant analyze <code>     个股深度分析
@@ -79,6 +84,7 @@ go build -o go-quant ./cmd/go-quant/
 3. moneyflow 是否包含最新交易日
 4. 新闻缓存 data/raw/news/latest.parquet 是否存在，signal 是否能刷新新闻热度
 5. signal 是否能通过实时行情拿到候选股和持仓的盘中价格，并报告实际数据来源
+6. 不检查或拉取 PE/PB/财务数据；这些数据只由月度/季度价值任务使用
 只检查和报告，不要修改代码。
 ```
 
@@ -333,6 +339,8 @@ portfolio.yaml 文件在项目根目录，格式是 transactions[] 交易流水�
 8. 重点校验：是否应该空仓 + 多策略共振 + 观察机会是否值得跟踪 + 资金确认/背离 + 实时当前价/盘中涨跌幅 + 新闻/政策催化 + 涨跌停不可成交风险 + A股风险标签
 9. 如果仓位策略是空仓或观望，正式推荐买入写"无"，观察机会只能写"可跟踪/等待确认"，不要为了凑满 Top N 强行推荐
 10. 整理成一段简洁的日报：今日市场判断、是否空仓、推荐买入的股票、观察机会、我的持仓操作建议（日报行数最好不好超过60行，字数太多影响观感）
+
+注意：PE、PE_TTM、PB、ROE、分红与行业估值不属于日终任务；不要执行 `fetch --daily-basic`、`fetch --financials` 或 `value` 命令，也不要把价值候选混入正式交易推荐。
 ```
 
 ```
@@ -357,6 +365,32 @@ portfolio.yaml 文件在项目根目录，格式是 transactions[] 交易流水�
 5. 我的持仓按实时价该不该动
 6. 新闻/政策有没有明显风险或催化
 7. 一句话市场判断
+```
+
+---
+
+## 价值投资（月度/季度）
+
+```
+执行月度价值筛选，不要运行日常 signal，也不要使用盘中实时行情。
+
+1. 找到本地最新收盘交易日 YYYYMMDD；若当天收盘数据不存在，使用最近一个本地交易日并说明日期。
+2. 编译：go build -o go-quant ./cmd/go-quant/
+3. 仅拉取该日估值快照：./go-quant fetch --daily-basic --date YYYYMMDD
+4. 构建相同日期的行业估值：./go-quant sector build --date YYYYMMDD
+5. 运行：./go-quant value monthly --date YYYYMMDD -n 20
+
+分析输出请区分“价值候选池”和“立即买入”：候选池只允许写“可埋伏跟踪/等待确认”，不得因数量不足放宽条件或强行推荐。逐个说明行业 PE_TTM/PB 对比、估值折价、ROE、利润同比、营收同比，以及可能的价值陷阱。最后列出后续季度要核验的财报项目和失效条件。
+```
+
+```
+执行季度价值复核。该任务只处理最近的月度价值候选池，不运行日常 signal，也不根据盘中行情交易。
+
+1. 找到本地最新收盘交易日 YYYYMMDD，编译项目。
+2. 在财报更新后运行 ./go-quant fetch --financials；再运行 ./go-quant fetch --daily-basic --date YYYYMMDD 和 ./go-quant sector build --date YYYYMMDD。
+3. 运行：./go-quant value quarterly --date YYYYMMDD
+
+逐个解释输出的“继续跟踪”“估值回归，评估分批止盈”“基本面恶化，移出价值池”或“数据不足，等待财报”。PE_TTM 折价收敛不是自动卖出指令；必须结合持仓成本、业绩兑现和行业景气判断。亏损股不以 PE 判断，银行、保险、证券和多元金融以 PB + ROE 为主。
 ```
 
 ---

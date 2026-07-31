@@ -57,6 +57,12 @@ func writeDailyBasicParquet(path string, basics []DailyBasic) error {
 	return writeGenericParquet(path, basics)
 }
 
+func writeMergedDailyBasicParquet(path string, basics []DailyBasic) error {
+	return writeMergedGenericParquet(path, basics, func(b DailyBasic) string {
+		return b.TsCode + "|" + b.TradeDate
+	})
+}
+
 func writeFinaParquet(path string, data []FinaIndicator) error {
 	return writeGenericParquet(path, data)
 }

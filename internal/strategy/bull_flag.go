@@ -9,7 +9,6 @@ type BullFlag struct {
 	MAPeriod     int
 	VolumePeriod int
 	VolumeRatio  float64
-	fundStore    *data.FundamentalStore
 }
 
 func NewBullFlag(maPeriod, volPeriod int, volRatio float64) *BullFlag {
@@ -17,12 +16,6 @@ func NewBullFlag(maPeriod, volPeriod int, volRatio float64) *BullFlag {
 		MAPeriod:     maPeriod,
 		VolumePeriod: volPeriod,
 		VolumeRatio:  volRatio,
-	}
-}
-
-func (b *BullFlag) SetFundStore(fs interface{}) {
-	if s, ok := fs.(*data.FundamentalStore); ok {
-		b.fundStore = s
 	}
 }
 
@@ -55,13 +48,6 @@ func (b *BullFlag) Signal(bars []data.DailyBar, idx int) SignalType {
 	aboveMA := curClose >= ma10 && prevClose >= ma10Prev
 
 	if nearMA && volShrink && aboveMA {
-		if b.fundStore != nil {
-			code := bars[idx].TsCode
-			turnover := b.fundStore.GetTurnover(code, bars[idx].TradeDate)
-			if turnover > 0 && turnover < 3 {
-				return Hold
-			}
-		}
 		return Buy
 	}
 
@@ -89,13 +75,6 @@ func (b *BullFlag) Score(bars []data.DailyBar, idx int) float64 {
 	volScore := (1 - curVol/maxVol) * 10
 	score := volScore - math.Abs(distFromMA)
 
-	if b.fundStore != nil {
-		code := bars[idx].TsCode
-		turnover := b.fundStore.GetTurnover(code, bars[idx].TradeDate)
-		if turnover > 5 {
-			score += 10
-		}
-	}
 	return score
 }
 

@@ -10,10 +10,11 @@ import (
 )
 
 type LoadOptions struct {
-	RawDir       string
-	LatestOnly   bool
-	FilterST     bool
-	MinMarketCap float64
+	RawDir           string
+	LatestOnly       bool
+	FilterST         bool
+	MinMarketCap     float64
+	LoadFundamentals bool
 }
 
 type Dataset struct {
@@ -50,9 +51,11 @@ func Load(opts LoadOptions) (*Dataset, error) {
 		Bars:         bars,
 		CodeMap:      sortedCodeMap(bars),
 		StockNames:   data.LoadStockNames(filepath.Join(opts.RawDir, "stocks.parquet")),
-		Fundamentals: LoadFundamentals(opts.RawDir),
 		StkLimits:    stkLimits,
 		TradingDates: data.LoadTradeDates(opts.RawDir, bars),
+	}
+	if opts.LoadFundamentals || opts.MinMarketCap > 0 {
+		ds.Fundamentals = LoadFundamentals(opts.RawDir)
 	}
 	ds.LatestDate = latestTradeDate(ds.CodeMap)
 

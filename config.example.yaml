@@ -29,9 +29,6 @@ signal:
     - rsi
     - bollinger
     - volume_breakout
-    - value_ma60
-    - etf_rotation
-    - dividend_deviation
     - bull_flag
     - kdj
     - williams_r
@@ -41,12 +38,9 @@ signal:
     - roc
     - ma_sticky
     - limit_up
-    - bottom_reversal
     - relative_strength
     - atr_breakout
     - trend_pullback
-    - quality_value
-    - earnings_growth
   top_n: 20
 
 # 正式买入候选需要有历史样本外证据。先运行

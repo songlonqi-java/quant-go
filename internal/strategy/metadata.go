@@ -43,6 +43,27 @@ var strategyMetadata = map[string]Metadata{
 	"earnings_growth":    {Name: "earnings_growth", Horizon: HorizonLong, Group: GroupValue},
 }
 
+// DailyStrategyNames excludes slow fundamental/value strategies from the
+// end-of-day trading workflow. They are evaluated by the dedicated value
+// module on a monthly or quarterly cadence instead.
+func DailyStrategyNames(names []string) []string {
+	excluded := map[string]bool{
+		"value_ma60":         true,
+		"etf_rotation":       true,
+		"dividend_deviation": true,
+		"bottom_reversal":    true,
+		"quality_value":      true,
+		"earnings_growth":    true,
+	}
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if !excluded[name] {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
+}
+
 func MetadataForStrategy(name string) Metadata {
 	if meta, ok := strategyMetadata[name]; ok {
 		return meta

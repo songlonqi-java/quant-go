@@ -20,10 +20,12 @@
 | `--start-year/--end-year` | 年份范围 | `./go-quant fetch --start-year 2024` |
 | `--stk-limit` | 每日涨跌停价格 | `./go-quant fetch --stk-limit --start 20260101 --end 20260722` |
 | `--moneyflow` | 个股资金流向 | `./go-quant fetch --moneyflow --date 20260722` |
-| `--daily-basic` | PE/PB/市值/股息率 | `./go-quant fetch --daily-basic` |
+| `--daily-basic` | PE/PB/市值/股息率；配合 `--today` 仅补当日快照 | `./go-quant fetch --daily-basic --today` |
 | `--financials` | ROE/利润率/利润表 | `./go-quant fetch --financials` |
 | `--hs300` | 沪深300成分股 | `./go-quant fetch --hs300` |
 | `--index` | 上证/深证/创业板指数 | `./go-quant fetch --index` |
+
+`daily_basic` 是价值投资模块的慢频数据，不随 `fetch --today` / `fetch --date` 自动更新。月度筛选或季度复核前，使用 `./go-quant fetch --daily-basic --date <最近交易日>` 显式拉取并合并当日估值快照。
 
 `--stk-limit` 和 `--moneyflow` 支持 `--today`、`--date`、`--start/--end`、`--start-year/--end-year`，并按年份合并写入，不会因为补拉单日而覆盖整年文件。
 
@@ -40,7 +42,32 @@
 
 当前第一阶段使用 `stocks.parquet` 的行业字段做行业板块聚合，输出到 `data/raw/sector_daily/YYYY.parquet`。同一天同一板块会覆盖写入，支持重复运行。
 
-聚合字段包括涨跌幅、上涨家数占比、MA20 上方占比、涨跌停数量、成交额放大倍数、资金净流入、大单净流入、领涨股和异动标签。常见标签包括 `板块放量`、`赚钱效应扩散`、`涨停扩散`、`资金确认`、`资金背离`、`强势延续`、`高位退潮`、`孤立龙头`。
+聚合字段包括涨跌幅、上涨家数占比、MA20 上方占比、涨跌停数量、成交额放大倍数、资金净流入、大单净流入、领涨股、异动标签及估值快照。估值快照会持久化 `PEAvg`、`PETTMAvg`、`PBAvg`、各自有效样本数，以及更适合板块横向比较的 `PETTMAggregate`/`PBAggregate`。
+
+`PETTMAggregate` 的口径为“盈利样本总市值 ÷ 其隐含 TTM 净利润之和”；亏损、零 PE 或缺少市值的股票不纳入，样本数会同时保存。因此它不是把个股 PE 简单平均，也不能与含有亏损公司的全样本算术均值混用。月度筛选或季度复核前，在显式拉取估值后运行 `./go-quant sector build --date <YYYYMMDD>`，即可将该日板块估值写入 `data/raw/sector_daily/YYYY.parquet`；`analyze <代码>` 会显示所属行业的该口径 PE_TTM。
+
+---
+
+## `go-quant value` — 慢频价值投资
+
+价值模块不参与日常 `signal` 的短中线推荐，也不使用盘中实时行情。它只使用明确落盘的收盘后估值和财务数据，候选池不等同于立即买入清单。
+
+月末先更新单日估值、重建该日行业聚合，再运行月度筛选：
+
+```bash
+./go-quant fetch --daily-basic --date 20260731
+./go-quant sector build --date 20260731
+./go-quant value monthly --date 20260731 -n 20
+```
+
+| 命令 | 说明 |
+|------|------|
+| `value monthly` | 以 PE_TTM/PB、行业聚合估值、ROE、利润及营收增速生成价值候选池，并保存到 `data/raw/value/YYYYMMDD.json` |
+| `value quarterly` | 读取最近月度候选池，按最新财务与行业估值给出继续跟踪、估值回归或基本面恶化结论，保存到 `data/raw/value/review/YYYYMMDD.json` |
+| `--date YYYYMMDD` | 指定已同步日线、估值和行业快照的交易日，默认本地最新日线日期 |
+| `-n, --top N` | 月度任务保存/显示前 N 个候选；季度任务限制显示/保存的复核条数；`0` 表示全部 |
+
+非金融行业使用正 PE_TTM、PB 合理、ROE 不低于 8%、利润与营收同比不为负，以及相对行业聚合 PE_TTM 至少 20% 折价；银行、保险、证券和多元金融改用 PB 与 ROE。季度复核中，ROE 低于 6% 或利润/营收同比低于 -10% 会移出价值池；相对行业估值折价收敛至 5% 内时标记为“评估分批止盈”。这些是固定、可复现的 `value-v1` 规则，不能把候选池当作即时交易指令。
 
 ---
 
@@ -57,7 +84,7 @@
 | `--market-window` | 全市场行情刷新窗口，默认 1 分钟 | `--market-window 1m` |
 | `--realtime-source` | `auto`（东方财富主源、失败时新浪降级）/ `eastmoney` / `sina` | `--realtime-source eastmoney` |
 
-输出五个板块：市场概况 → 新闻热度 → 仓位策略 → 持仓概览 → 短线/中线/长线买卖建议。市场概况会展示赚钱效应、涨跌停数量和 A 股风险标签。
+输出五个板块：市场概况 → 新闻热度 → 仓位策略 → 持仓概览 → 短线/中线/长线买卖建议。市场概况会展示赚钱效应、涨跌停数量和 A 股风险标签。日常默认策略不加载 PE、PE_TTM、PB、ROE、分红等慢频估值条件；这些条件仅在 `value` 命令使用。
 
 `signal` 会按周期分别聚合策略，表格只展示触发 BUY/SELL 的策略，不展示 HOLD 策略。CSV/JSON 输出包含 `horizon` 字段；如果本地有 `moneyflow` 数据，还会输出资金净额和大单净额，并在风险标签里标注资金确认、资金背离或资金分歧。
 

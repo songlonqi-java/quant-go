@@ -12,7 +12,8 @@ import (
 
 func TestDefaultAndExampleStrategiesMatchRegistry(t *testing.T) {
 	registryNames := strategy.DefaultRegistry().List()
-	assertSameStrategySet(t, defaultConfig.Signal.DefaultStrategies, registryNames, "default config")
+	dailyNames := strategy.DailyStrategyNames(registryNames)
+	assertSameStrategySet(t, defaultConfig.Signal.DefaultStrategies, dailyNames, "default config")
 
 	contents, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
 	if err != nil {
@@ -22,7 +23,7 @@ func TestDefaultAndExampleStrategiesMatchRegistry(t *testing.T) {
 	if err := yaml.Unmarshal(contents, &example); err != nil {
 		t.Fatal(err)
 	}
-	assertSameStrategySet(t, example.Signal.DefaultStrategies, registryNames, "example config")
+	assertSameStrategySet(t, example.Signal.DefaultStrategies, dailyNames, "example config")
 }
 
 func assertSameStrategySet(t *testing.T, actual, expected []string, source string) {

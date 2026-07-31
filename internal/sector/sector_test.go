@@ -21,8 +21,18 @@ func TestAnalyzeIndustrySectorDaily(t *testing.T) {
 		{TsCode: "000001.SZ", TradeDate: "20260121", NetMfAmount: 100, BuyLgAmount: 60, BuyElgAmount: 20},
 		{TsCode: "000002.SZ", TradeDate: "20260121", NetMfAmount: 50, BuyLgAmount: 30, BuyElgAmount: 10},
 	})
+	fundamentals := data.NewFundamentalStore()
+	fundamentals.LoadDailyBasics([]data.DailyBasic{
+		{TsCode: "000001.SZ", TradeDate: "20260121", Pe: 10, PeTTM: 8, Pb: 2, TotalMv: 800},
+		{TsCode: "000002.SZ", TradeDate: "20260121", Pe: 20, PeTTM: 16, Pb: 4, TotalMv: 1600},
+		{TsCode: "000003.SZ", TradeDate: "20260121", Pe: -5, PeTTM: -2, Pb: 1, TotalMv: 100},
+	})
 
-	rows := Analyze(codeMap, memberships, moneyflows, AnalyzeOptions{Dates: []string{"20260121"}, UpdatedAt: "test"})
+	rows := Analyze(codeMap, memberships, moneyflows, AnalyzeOptions{
+		Dates:        []string{"20260121"},
+		UpdatedAt:    "test",
+		Fundamentals: fundamentals,
+	})
 	report := NewReport(rows)
 	tech, ok := report.Find(TypeIndustry, "科技")
 	if !ok {
@@ -45,6 +55,15 @@ func TestAnalyzeIndustrySectorDaily(t *testing.T) {
 		if !HasTag(tech, tag) {
 			t.Fatalf("Tags = %q, want %s", tech.Tags, tag)
 		}
+	}
+	if tech.PECount != 2 || tech.PETTMCount != 2 || tech.PBCount != 2 {
+		t.Fatalf("估值样本数 PE/PE_TTM/PB = %d/%d/%d, want 2/2/2", tech.PECount, tech.PETTMCount, tech.PBCount)
+	}
+	if tech.PEAvg != 15 || tech.PETTMAvg != 12 || tech.PBAvg != 3 {
+		t.Fatalf("估值均值 PE/PE_TTM/PB = %.2f/%.2f/%.2f, want 15/12/3", tech.PEAvg, tech.PETTMAvg, tech.PBAvg)
+	}
+	if tech.PETTMAggregate != 12 || tech.PBAggregate != 3 {
+		t.Fatalf("聚合估值 PE_TTM/PB = %.2f/%.2f, want 12/3", tech.PETTMAggregate, tech.PBAggregate)
 	}
 }
 

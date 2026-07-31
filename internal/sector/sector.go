@@ -91,8 +91,9 @@ func activeOn(m Membership, date string) bool {
 }
 
 type AnalyzeOptions struct {
-	Dates     []string
-	UpdatedAt string
+	Dates        []string
+	UpdatedAt    string
+	Fundamentals *data.FundamentalStore
 }
 
 func Analyze(codeMap map[string][]data.DailyBar, memberships MembershipStore, moneyflows *data.MoneyflowStore, opts AnalyzeOptions) []data.SectorDaily {
@@ -157,7 +158,7 @@ func Analyze(codeMap map[string][]data.DailyBar, memberships MembershipStore, mo
 					}
 					byDateSector[date][key] = acc
 				}
-				acc.add(code, bars, idx, moneyflows)
+				acc.add(code, bars, idx, moneyflows, opts.Fundamentals)
 			}
 		}
 	}
@@ -212,9 +213,21 @@ type sectorAccumulator struct {
 	netMoneyflow float64
 	largeNetFlow float64
 	leaders      []leader
+
+	peSum      float64
+	peCount    int
+	peTTMSum   float64
+	peTTMCount int
+	pbSum      float64
+	pbCount    int
+
+	peTTMMarketCap float64
+	peTTMProfit    float64
+	pbMarketCap    float64
+	pbEquity       float64
 }
 
-func (a *sectorAccumulator) add(code string, bars []data.DailyBar, idx int, moneyflows *data.MoneyflowStore) {
+func (a *sectorAccumulator) add(code string, bars []data.DailyBar, idx int, moneyflows *data.MoneyflowStore, fundamentals *data.FundamentalStore) {
 	if idx < 0 || idx >= len(bars) {
 		return
 	}
@@ -272,6 +285,35 @@ func (a *sectorAccumulator) add(code string, bars []data.DailyBar, idx int, mone
 			a.largeNetFlow += mf.LargeNetAmount()
 		}
 	}
+	if fundamentals != nil {
+		a.addValuation(fundamentals.GetDailyBasic(code, cur.TradeDate))
+	}
+}
+
+func (a *sectorAccumulator) addValuation(basic *data.DailyBasic) {
+	if basic == nil {
+		return
+	}
+	if basic.Pe > 0 {
+		a.peSum += basic.Pe
+		a.peCount++
+	}
+	if basic.PeTTM > 0 {
+		a.peTTMSum += basic.PeTTM
+		a.peTTMCount++
+		if basic.TotalMv > 0 {
+			a.peTTMMarketCap += basic.TotalMv
+			a.peTTMProfit += basic.TotalMv / basic.PeTTM
+		}
+	}
+	if basic.Pb > 0 {
+		a.pbSum += basic.Pb
+		a.pbCount++
+		if basic.TotalMv > 0 {
+			a.pbMarketCap += basic.TotalMv
+			a.pbEquity += basic.TotalMv / basic.Pb
+		}
+	}
 }
 
 func (a *sectorAccumulator) daily(updatedAt string) data.SectorDaily {
@@ -282,6 +324,9 @@ func (a *sectorAccumulator) daily(updatedAt string) data.SectorDaily {
 		SectorName:     a.sectorName,
 		Source:         a.source,
 		MemberCount:    a.memberCount,
+		PECount:        a.peCount,
+		PETTMCount:     a.peTTMCount,
+		PBCount:        a.pbCount,
 		RisingCount:    a.risingCount,
 		FallingCount:   a.fallingCount,
 		FlatCount:      a.flatCount,
@@ -295,6 +340,15 @@ func (a *sectorAccumulator) daily(updatedAt string) data.SectorDaily {
 	row.Chg1 = avg(a.chg1Sum, a.chg1Cnt)
 	row.Chg5 = avg(a.chg5Sum, a.chg5Cnt)
 	row.Chg20 = avg(a.chg20Sum, a.chg20Cnt)
+	row.PEAvg = avg(a.peSum, a.peCount)
+	row.PETTMAvg = avg(a.peTTMSum, a.peTTMCount)
+	row.PBAvg = avg(a.pbSum, a.pbCount)
+	if a.peTTMProfit > 0 {
+		row.PETTMAggregate = a.peTTMMarketCap / a.peTTMProfit
+	}
+	if a.pbEquity > 0 {
+		row.PBAggregate = a.pbMarketCap / a.pbEquity
+	}
 	if row.RisingCount+row.FallingCount+row.FlatCount > 0 {
 		row.Breadth = float64(row.RisingCount) / float64(row.RisingCount+row.FallingCount+row.FlatCount) * 100
 	}

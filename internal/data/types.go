@@ -156,6 +156,14 @@ type SectorDaily struct {
 	SectorName     string  `parquet:"sector_name"`
 	Source         string  `parquet:"source"`
 	MemberCount    int     `parquet:"member_count"`
+	PECount        int     `parquet:"pe_count"`
+	PETTMCount     int     `parquet:"pe_ttm_count"`
+	PBCount        int     `parquet:"pb_count"`
+	PEAvg          float64 `parquet:"pe_avg"`
+	PETTMAvg       float64 `parquet:"pe_ttm_avg"`
+	PBAvg          float64 `parquet:"pb_avg"`
+	PETTMAggregate float64 `parquet:"pe_ttm_aggregate"`
+	PBAggregate    float64 `parquet:"pb_aggregate"`
 	RisingCount    int     `parquet:"rising_count"`
 	FallingCount   int     `parquet:"falling_count"`
 	FlatCount      int     `parquet:"flat_count"`

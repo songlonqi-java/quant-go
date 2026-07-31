@@ -75,15 +75,20 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		opts.ForwardDir = cfg.Data.RawDir + "/../forward_test"
 	}
 
-	selectedStrategies, strategyNames, err := selectStrategies(opts.StrategyNames, cfg.Signal.DefaultStrategies)
+	defaultNames := cfg.Signal.DefaultStrategies
+	if len(opts.StrategyNames) == 0 {
+		defaultNames = strategy.DailyStrategyNames(defaultNames)
+	}
+	selectedStrategies, strategyNames, err := selectStrategies(opts.StrategyNames, defaultNames)
 	if err != nil {
 		return nil, err
 	}
 	ds, err := dataset.Load(dataset.LoadOptions{
-		RawDir:       cfg.Data.RawDir,
-		LatestOnly:   true,
-		FilterST:     true,
-		MinMarketCap: cfg.Fetch.MinMarketCap,
+		RawDir:           cfg.Data.RawDir,
+		LatestOnly:       true,
+		FilterST:         true,
+		MinMarketCap:     cfg.Fetch.MinMarketCap,
+		LoadFundamentals: usesFundamentals(selectedStrategies),
 	})
 	if err != nil {
 		return nil, err
@@ -197,6 +202,15 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		result.ForwardErr = forward.RecordWithDecision(opts.ForwardDir, forwardSignals, result.MarketStatus, 5, ds.TradingDates, result.PositionDecision)
 	}
 	return result, nil
+}
+
+func usesFundamentals(strategiesList []strategy.Strategy) bool {
+	for _, current := range strategiesList {
+		if _, ok := current.(strategy.FundStoreUser); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func fetchMarketRealtime(provider realtime.Provider, codeMap map[string][]data.DailyBar, window time.Duration) ([]realtime.Quote, realtime.FetchStats, error) {

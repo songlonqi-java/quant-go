@@ -8,6 +8,7 @@ import (
 
 	"quant/internal/config"
 	"quant/internal/data"
+	"quant/internal/sector"
 	"quant/internal/strategy"
 
 	"github.com/parquet-go/parquet-go"
@@ -41,6 +42,11 @@ type Report struct {
 	MarketCap float64
 	DivYield  float64
 	Turnover  float64
+
+	IndustryPETTM      float64
+	IndustryPETTMCount int
+	IndustryPETTMAvg   float64
+	IndustryPEAvg      float64
 
 	BuySignals  []string
 	SellSignals []string
@@ -87,9 +93,28 @@ func Run(code, configPath string) (*Report, error) {
 	r.loadMA(stockBars, last)
 	r.loadPriceStats(stockBars, last)
 	r.loadFundamentals(fundStore, code, stockBars[last].TradeDate)
+	r.loadIndustryValuation(cfg.Data.RawDir, stockBars[last].TradeDate)
 	r.loadStrategySignals(stockBars, last, codeMap, fundStore)
 
 	return r, nil
+}
+
+func (r *Report) loadIndustryValuation(rawDir, tradeDate string) {
+	if r.Industry == "" {
+		return
+	}
+	report, err := sector.LoadReport(rawDir, tradeDate)
+	if err != nil || report == nil {
+		return
+	}
+	row, ok := report.Find(sector.TypeIndustry, r.Industry)
+	if !ok {
+		return
+	}
+	r.IndustryPETTM = row.PETTMAggregate
+	r.IndustryPETTMCount = row.PETTMCount
+	r.IndustryPETTMAvg = row.PETTMAvg
+	r.IndustryPEAvg = row.PEAvg
 }
 
 func (r *Report) loadNameAndIndustry(path string) {
@@ -248,6 +273,10 @@ func (r *Report) Print() {
 		fmt.Printf("║  PE:%.2f  PE_TTM:%.2f  PB:%.2f  市值:%.0f亿\n",
 			r.PE, r.PETTM, r.PB, r.MarketCap/10000)
 		fmt.Printf("║  股息率:%.2f%%  换手率:%.2f%%\n", r.DivYield, r.Turnover)
+	}
+	if r.IndustryPETTM > 0 {
+		fmt.Printf("║  行业PE_TTM:%.2f（聚合，样本%d；算术均值%.2f）\n",
+			r.IndustryPETTM, r.IndustryPETTMCount, r.IndustryPETTMAvg)
 	}
 
 	fmt.Printf("╠══════════════════════════════════════════╣\n")

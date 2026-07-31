@@ -283,6 +283,47 @@ func (f *Fetcher) FetchDate(ctx context.Context, date string, force bool) ([]Dai
 	return bars, nil
 }
 
+// FetchDailyBasicForDate pulls one end-of-day valuation snapshot and merges it
+// into the matching yearly Parquet file. It intentionally keeps loss-making
+// companies (whose PE is non-positive); sector aggregation decides which values
+// have a meaningful average.
+func (f *Fetcher) FetchDailyBasicForDate(ctx context.Context, tradeDate string) ([]DailyBasic, error) {
+	if f.client == nil {
+		return nil, fmt.Errorf("Tushare 客户端未初始化")
+	}
+	if len(tradeDate) != 8 {
+		return nil, fmt.Errorf("交易日期格式错误: %q", tradeDate)
+	}
+	basics, err := f.client.FetchDailyBasicByDate(ctx, tradeDate)
+	if err != nil {
+		return nil, err
+	}
+	if len(basics) == 0 {
+		return nil, fmt.Errorf("%s 无日度估值数据", tradeDate)
+	}
+	if len(f.prefixes) > 0 {
+		filtered := make([]DailyBasic, 0, len(basics))
+		for _, basic := range basics {
+			for _, prefix := range f.prefixes {
+				if strings.HasPrefix(basic.TsCode, prefix) {
+					filtered = append(filtered, basic)
+					break
+				}
+			}
+		}
+		basics = filtered
+	}
+	if len(basics) == 0 {
+		return nil, fmt.Errorf("%s 没有符合股票池前缀的日度估值数据", tradeDate)
+	}
+	path := filepath.Join(f.rawDir, "daily_basic", tradeDate[:4]+".parquet")
+	if err := writeMergedDailyBasicParquet(path, basics); err != nil {
+		return nil, fmt.Errorf("保存日度估值失败: %w", err)
+	}
+	fmt.Printf(">>> 日度估值已合并保存: %s (%d 条)\n", path, len(basics))
+	return basics, nil
+}
+
 func (f *Fetcher) FetchDateRange(ctx context.Context, startDate, endDate string) error {
 	fmt.Printf(">>> 拉取 %s ~ %s 数据...\n", startDate, endDate)
 

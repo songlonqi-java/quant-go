@@ -21,6 +21,7 @@ import (
 	"quant/internal/signal"
 	"quant/internal/strategy"
 	"quant/internal/validation"
+	"quant/internal/value"
 	signalworkflow "quant/internal/workflow/signal"
 
 	"github.com/spf13/cobra"
@@ -46,6 +47,7 @@ func main() {
 	rootCmd.AddCommand(signalCmd())
 	rootCmd.AddCommand(forwardCmd())
 	rootCmd.AddCommand(validationCmd())
+	rootCmd.AddCommand(valueCmd())
 	rootCmd.AddCommand(analyzeCmd())
 	rootCmd.AddCommand(listCmd())
 
@@ -153,8 +155,15 @@ func sectorCmd() *cobra.Command {
 			}
 			fetcher := data.NewFetcher(nil, cfg.Data.RawDir, nil)
 			moneyflows, _ := fetcher.LoadMoneyflowStore()
+			fundamentals, err := fetcher.LoadDailyBasicStore()
+			if err != nil {
+				fmt.Printf("  警告: 加载日度估值失败: %v\n", err)
+			}
 
-			rows := sector.Analyze(codeMap, memberships, moneyflows, sector.AnalyzeOptions{Dates: dates})
+			rows := sector.Analyze(codeMap, memberships, moneyflows, sector.AnalyzeOptions{
+				Dates:        dates,
+				Fundamentals: fundamentals,
+			})
 			if len(rows) == 0 {
 				return fmt.Errorf("没有生成板块数据")
 			}
@@ -246,6 +255,15 @@ func fetchCmd() *cobra.Command {
 				sd := fmt.Sprintf("%d0101", cfg.Fetch.StartYear)
 				ed := fmt.Sprintf("%d1231", cfg.Fetch.EndYear)
 				return fetcher.FetchFinancials(ctx, sd, ed, cfg.Fetch.MinMarketCap)
+			}
+
+			if dailyBasic && (today || date != "") {
+				tradeDate := date
+				if today {
+					tradeDate = time.Now().Format("20060102")
+				}
+				_, err := fetcher.FetchDailyBasicForDate(ctx, tradeDate)
+				return err
 			}
 
 			if dailyBasic {
@@ -688,20 +706,27 @@ func validationCmd() *cobra.Command {
 		Short: "回放全历史信号并生成推荐资格、胜率和权重证据",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
-			ds, err := dataset.Load(dataset.LoadOptions{RawDir: cfg.Data.RawDir})
+			names := strategyNames
+			if len(names) == 0 {
+				names = strategy.DailyStrategyNames(cfg.Signal.DefaultStrategies)
+			}
+			strategies, err := registeredStrategies(names)
+			if err != nil {
+				return err
+			}
+			loadFundamentals := false
+			for _, current := range strategies {
+				if _, ok := current.(strategy.FundStoreUser); ok {
+					loadFundamentals = true
+					break
+				}
+			}
+			ds, err := dataset.Load(dataset.LoadOptions{RawDir: cfg.Data.RawDir, LoadFundamentals: loadFundamentals})
 			if err != nil {
 				return err
 			}
 			if q := data.CheckPriceDataQuality(ds.Bars); !q.HasCompleteRawPrices() && !allowAdjusted {
 				return fmt.Errorf("%s；历史验证需要真实成交价，请重新拉取行情数据，或临时使用 --allow-adjusted-trades", q.Summary())
-			}
-			names := strategyNames
-			if len(names) == 0 {
-				names = cfg.Signal.DefaultStrategies
-			}
-			strategies, err := registeredStrategies(names)
-			if err != nil {
-				return err
 			}
 			path := outputPath
 			if path == "" {
@@ -738,6 +763,64 @@ func validationCmd() *cobra.Command {
 	buildCmd.Flags().IntVar(&workers, "workers", 0, "回放并行工作数（默认 GOMAXPROCS）")
 	buildCmd.Flags().BoolVar(&allowAdjusted, "allow-adjusted-trades", false, "允许用复权价近似历史成交价（仅用于旧数据临时验证）")
 	cmd.AddCommand(buildCmd)
+	return cmd
+}
+
+func valueCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "value",
+		Short: "慢频价值投资筛选与季度复核",
+		Long:  "价值模块独立于日常交易信号：月度使用 PE_TTM/PB 与财务质量筛选，季度复核基本面和估值回归。",
+	}
+	var (
+		monthlyDate   string
+		monthlyTopN   int
+		quarterlyDate string
+		quarterlyTopN int
+	)
+	monthlyCmd := &cobra.Command{
+		Use:   "monthly",
+		Short: "生成并保存月度价值候选池",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			report, err := value.Monthly(value.MonthlyOptions{
+				RawDir:       cfg.Data.RawDir,
+				Date:         monthlyDate,
+				TopN:         monthlyTopN,
+				MinMarketCap: cfg.Fetch.MinMarketCap,
+			})
+			if err != nil {
+				return err
+			}
+			report.Print()
+			return nil
+		},
+	}
+	monthlyCmd.Flags().StringVar(&monthlyDate, "date", "", "估值快照日期 YYYYMMDD，默认最新日线交易日")
+	monthlyCmd.Flags().IntVarP(&monthlyTopN, "top", "n", 20, "保存和显示前 N 个价值候选，0=全部")
+
+	quarterlyCmd := &cobra.Command{
+		Use:   "quarterly",
+		Short: "复核最近月度价值候选池并保存结果",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			report, err := value.Quarterly(value.QuarterlyOptions{
+				RawDir: cfg.Data.RawDir,
+				Date:   quarterlyDate,
+				TopN:   quarterlyTopN,
+			})
+			if err != nil {
+				return err
+			}
+			report.Print()
+			return nil
+		},
+	}
+	quarterlyCmd.Flags().StringVar(&quarterlyDate, "date", "", "复核日期 YYYYMMDD，默认最新日线交易日")
+	quarterlyCmd.Flags().IntVarP(&quarterlyTopN, "top", "n", 0, "保存和显示前 N 个复核结果，0=全部")
+
+	cmd.AddCommand(monthlyCmd)
+	cmd.AddCommand(quarterlyCmd)
 	return cmd
 }
 
