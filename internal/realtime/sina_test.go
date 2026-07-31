@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestToSinaSymbol(t *testing.T) {
@@ -87,6 +88,34 @@ func TestSinaProviderFetch(t *testing.T) {
 	}
 	if byCode["000001.SZ"].Current != 10.20 {
 		t.Fatalf("000001 current = %.2f, want 10.20", byCode["000001.SZ"].Current)
+	}
+}
+
+func TestFetchPacedReturnsQuotesAndPacingMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "var hq_str_sh600000=\"%s\";\n", record(32, ",", 0, "浦发银行", 1, "10.30", 2, "10.11", 3, "10.45", 4, "10.57", 5, "9.91", 30, "2026-07-23", 31, "15:00:00"))
+	}))
+	defer server.Close()
+
+	provider := &SinaProvider{BaseURL: server.URL + "/list=", HTTPClient: server.Client(), BatchSize: 1}
+	quotes, stats, err := provider.FetchPaced([]string{"600000.SH", "600001.SH"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 2 || stats.Requested != 2 || stats.Batches != 2 {
+		t.Fatalf("quotes/stats = %d/%+v, want 2 quotes and two batches", len(quotes), stats)
+	}
+	if stats.Interval != 0 {
+		t.Fatalf("Interval = %s, want 0 for zero window", stats.Interval)
+	}
+}
+
+func TestPacingIntervalUsesTheFullRefreshWindow(t *testing.T) {
+	if got := pacingInterval(39, time.Minute); got != time.Minute/39 {
+		t.Fatalf("pacingInterval = %s, want %s", got, time.Minute/39)
+	}
+	if got := pacingInterval(1, time.Minute); got != 0 {
+		t.Fatalf("pacingInterval for one batch = %s, want 0", got)
 	}
 }
 

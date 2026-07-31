@@ -3,6 +3,7 @@ package realtime
 import (
 	"sort"
 	"strings"
+	"time"
 )
 
 type Quote struct {
@@ -21,6 +22,13 @@ type Quote struct {
 
 type Provider interface {
 	Fetch(codes []string) ([]Quote, error)
+}
+
+// PacedProvider supports the slower, full-market refresh used during trading
+// hours. Candidate-only checks only require Provider.Fetch.
+type PacedProvider interface {
+	Provider
+	FetchPaced(codes []string, window time.Duration) ([]Quote, FetchStats, error)
 }
 
 func MapByCode(quotes []Quote) map[string]Quote {

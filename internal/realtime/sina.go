@@ -22,6 +22,18 @@ type SinaProvider struct {
 	BatchSize  int
 }
 
+// FetchStats describes a paced full-market request. Interval is enforced
+// between every HTTP attempt, including retries, so public quote endpoints
+// are not hammered when a batch fails.
+type FetchStats struct {
+	Source       string
+	FallbackFrom string
+	Requested    int
+	Batches      int
+	Interval     time.Duration
+	Elapsed      time.Duration
+}
+
 func NewSinaProvider() *SinaProvider {
 	return &SinaProvider{
 		BaseURL: defaultSinaURL,
@@ -60,6 +72,79 @@ func (p *SinaProvider) Fetch(codes []string) ([]Quote, error) {
 		out = append(out, quotes...)
 	}
 	return out, nil
+}
+
+// FetchPaced spreads a complete quote refresh across the requested window.
+// It is intended for all-market intraday monitoring; ordinary candidate quote
+// checks should continue to use Fetch for lower latency.
+func (p *SinaProvider) FetchPaced(codes []string, window time.Duration) ([]Quote, FetchStats, error) {
+	codes = UniqueCodes(codes)
+	if len(codes) == 0 {
+		return nil, FetchStats{}, nil
+	}
+	if p.HTTPClient == nil {
+		p.HTTPClient = &http.Client{Timeout: 5 * time.Second}
+	}
+	if p.BaseURL == "" {
+		p.BaseURL = defaultSinaURL
+	}
+	if p.BatchSize <= 0 {
+		p.BatchSize = 80
+	}
+
+	batchCount := (len(codes) + p.BatchSize - 1) / p.BatchSize
+	stats := FetchStats{
+		Source:    sinaSource,
+		Requested: len(codes),
+		Batches:   batchCount,
+		Interval:  pacingInterval(batchCount, window),
+	}
+	startedAt := time.Now()
+	lastRequestAt := time.Time{}
+	var out []Quote
+	for start := 0; start < len(codes); start += p.BatchSize {
+		end := start + p.BatchSize
+		if end > len(codes) {
+			end = len(codes)
+		}
+		quotes, requestedAt, err := p.fetchBatchWithRetry(codes[start:end], stats.Interval, lastRequestAt)
+		if !requestedAt.IsZero() {
+			lastRequestAt = requestedAt
+		}
+		if err != nil {
+			stats.Elapsed = time.Since(startedAt)
+			return out, stats, err
+		}
+		out = append(out, quotes...)
+	}
+	stats.Elapsed = time.Since(startedAt)
+	return out, stats, nil
+}
+
+func pacingInterval(batchCount int, window time.Duration) time.Duration {
+	if batchCount <= 1 || window <= 0 {
+		return 0
+	}
+	return window / time.Duration(batchCount)
+}
+
+func (p *SinaProvider) fetchBatchWithRetry(codes []string, interval time.Duration, lastRequestAt time.Time) ([]Quote, time.Time, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if !lastRequestAt.IsZero() && interval > 0 {
+			if wait := interval - time.Since(lastRequestAt); wait > 0 {
+				time.Sleep(wait)
+			}
+		}
+		requestedAt := time.Now()
+		quotes, err := p.fetchBatch(codes)
+		if err == nil {
+			return quotes, requestedAt, nil
+		}
+		lastErr = err
+		lastRequestAt = requestedAt
+	}
+	return nil, lastRequestAt, fmt.Errorf("新浪实时行情批次重试失败: %w", lastErr)
 }
 
 func (p *SinaProvider) fetchBatch(codes []string) ([]Quote, error) {

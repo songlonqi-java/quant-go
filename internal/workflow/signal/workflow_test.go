@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"quant/internal/config"
 	"quant/internal/data"
@@ -22,6 +23,23 @@ func TestLoadPortfolioSummaryIgnoresMissingPortfolioFile(t *testing.T) {
 	}
 	if summary != nil {
 		t.Fatalf("summary = %+v, want nil", summary)
+	}
+}
+
+func TestFetchMarketRealtimeUsesPacedProvider(t *testing.T) {
+	provider := &testPacedProvider{}
+	quotes, stats, err := fetchMarketRealtime(provider, map[string][]data.DailyBar{
+		"600000.SH": nil,
+		"000001.SZ": nil,
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 2 || stats.Batches != 1 {
+		t.Fatalf("quotes/stats = %d/%+v", len(quotes), stats)
+	}
+	if len(provider.codes) != 2 || provider.window != time.Second {
+		t.Fatalf("provider = %+v", provider)
 	}
 }
 
@@ -117,6 +135,26 @@ func twoDigit(n int) string {
 
 type testRealtimeProvider struct {
 	codes []string
+}
+
+type testPacedProvider struct {
+	codes  []string
+	window time.Duration
+}
+
+func (p *testPacedProvider) Fetch(codes []string) ([]realtime.Quote, error) {
+	quotes, _, err := p.FetchPaced(codes, 0)
+	return quotes, err
+}
+
+func (p *testPacedProvider) FetchPaced(codes []string, window time.Duration) ([]realtime.Quote, realtime.FetchStats, error) {
+	p.codes = append([]string(nil), codes...)
+	p.window = window
+	quotes := make([]realtime.Quote, 0, len(codes))
+	for _, code := range codes {
+		quotes = append(quotes, realtime.Quote{Code: code, PrevClose: 10, Current: 10.1})
+	}
+	return quotes, realtime.FetchStats{Requested: len(codes), Batches: 1}, nil
 }
 
 func (p *testRealtimeProvider) Fetch(codes []string) ([]realtime.Quote, error) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"quant/internal/config"
 	"quant/internal/data"
@@ -21,15 +22,17 @@ import (
 )
 
 type Options struct {
-	Config           *config.Config
-	StrategyNames    []string
-	TopN             int
-	WatchN           int
-	Realtime         bool
-	PortfolioPath    string
-	ForwardDir       string
-	NewsAnalyzer     NewsAnalyzer
-	RealtimeProvider realtime.Provider
+	Config              *config.Config
+	StrategyNames       []string
+	TopN                int
+	WatchN              int
+	Realtime            bool
+	MarketRealtime      bool
+	MarketRefreshWindow time.Duration
+	PortfolioPath       string
+	ForwardDir          string
+	NewsAnalyzer        NewsAnalyzer
+	RealtimeProvider    realtime.Provider
 }
 
 // NewsAnalyzer is the seam for the optional external news source. Production
@@ -38,23 +41,26 @@ type Options struct {
 type NewsAnalyzer func(context.Context, string, int) (*news.NewsSummary, error)
 
 type Result struct {
-	StrategyNames    []string
-	Dataset          *dataset.Dataset
-	MarketStatus     *market.MarketStatus
-	NewsSummary      *news.NewsSummary
-	PortfolioSummary *portfolio.Summary
-	PositionDecision signals.PositionDecision
-	SectorReport     *sector.Report
-	Signals          []signals.SignalResult
-	Watchlist        []signals.SignalResult
-	RealtimeLoaded   int
-	NewsErr          error
-	RealtimeErr      error
-	ForwardErr       error
-	SectorErr        error
-	ValidationErr    error
-	ValidationStore  *validation.Store
-	PriceQuality     data.PriceDataQuality
+	StrategyNames       []string
+	Dataset             *dataset.Dataset
+	MarketStatus        *market.MarketStatus
+	IntradayMarket      *market.IntradayStatus
+	NewsSummary         *news.NewsSummary
+	PortfolioSummary    *portfolio.Summary
+	PositionDecision    signals.PositionDecision
+	SectorReport        *sector.Report
+	Signals             []signals.SignalResult
+	Watchlist           []signals.SignalResult
+	RealtimeLoaded      int
+	NewsErr             error
+	RealtimeErr         error
+	MarketRealtimeErr   error
+	MarketRealtimeStats realtime.FetchStats
+	ForwardErr          error
+	SectorErr           error
+	ValidationErr       error
+	ValidationStore     *validation.Store
+	PriceQuality        data.PriceDataQuality
 }
 
 func Run(ctx context.Context, opts Options) (*Result, error) {
@@ -113,6 +119,22 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	result.PortfolioSummary = portfolioSummary
 
+	var marketQuoteMap map[string]realtime.Quote
+	if opts.MarketRealtime {
+		quotes, stats, err := fetchMarketRealtime(opts.RealtimeProvider, ds.CodeMap, opts.MarketRefreshWindow)
+		result.MarketRealtimeStats = stats
+		result.IntradayMarket = market.AnalyzeIntraday(quotes, len(ds.CodeMap), ds.StkLimits)
+		if err != nil {
+			result.MarketRealtimeErr = err
+		} else if result.IntradayMarket.AsOf != realtime.ChinaTradeDate(time.Now()) {
+			result.MarketRealtimeErr = fmt.Errorf("实时行情日期%s与当前交易日%s不一致", result.IntradayMarket.AsOf, realtime.ChinaTradeDate(time.Now()))
+		} else if !result.IntradayMarket.Complete {
+			result.MarketRealtimeErr = fmt.Errorf("实时行情覆盖率%.1f%%不足，未用于候选盘中校验", result.IntradayMarket.CoveragePct)
+		} else {
+			marketQuoteMap = realtime.MapByCode(quotes)
+		}
+	}
+
 	allSignals := signals.GenerateWithContextAndMoneyflow(ds.CodeMap, selectedStrategies, 0, ds.StockNames, result.MarketStatus, ds.Moneyflows)
 	if result.SectorReport != nil {
 		if memberships, err := sector.LoadIndustryMemberships(cfg.Data.RawDir); err == nil {
@@ -146,7 +168,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	if opts.Realtime {
-		quoteMap, err := fetchRealtimeQuotes(opts.RealtimeProvider, realtimeTargets(candidatePool, watchPool), result.PortfolioSummary)
+		quoteMap := marketQuoteMap
+		var err error
+		if len(quoteMap) == 0 {
+			quoteMap, err = fetchRealtimeQuotes(opts.RealtimeProvider, realtimeTargets(candidatePool, watchPool), result.PortfolioSummary)
+		}
 		if err != nil {
 			result.RealtimeErr = err
 		} else if len(quoteMap) > 0 {
@@ -171,6 +197,20 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		result.ForwardErr = forward.RecordWithDecision(opts.ForwardDir, forwardSignals, result.MarketStatus, 5, ds.TradingDates, result.PositionDecision)
 	}
 	return result, nil
+}
+
+func fetchMarketRealtime(provider realtime.Provider, codeMap map[string][]data.DailyBar, window time.Duration) ([]realtime.Quote, realtime.FetchStats, error) {
+	if provider == nil {
+		provider = realtime.NewAutoProvider()
+	}
+	paced, ok := provider.(realtime.PacedProvider)
+	if !ok {
+		return nil, realtime.FetchStats{}, fmt.Errorf("实时行情提供方不支持全市场限速刷新")
+	}
+	if window <= 0 {
+		window = time.Minute
+	}
+	return paced.FetchPaced(market.SortedQuoteCodes(codeMap), window)
 }
 
 func loadPortfolioSummary(path string, ds *dataset.Dataset) (*portfolio.Summary, error) {
@@ -269,7 +309,7 @@ func fetchRealtimeQuotes(provider realtime.Provider, results []signals.SignalRes
 		return nil, nil
 	}
 	if provider == nil {
-		provider = realtime.NewSinaProvider()
+		provider = realtime.NewAutoProvider()
 	}
 	quotes, err := provider.Fetch(codes)
 	if err != nil {

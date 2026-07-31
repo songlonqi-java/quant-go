@@ -14,7 +14,9 @@ import (
 	"quant/internal/data"
 	"quant/internal/dataset"
 	"quant/internal/forward"
+	"quant/internal/market"
 	"quant/internal/portfolio"
+	"quant/internal/realtime"
 	"quant/internal/sector"
 	"quant/internal/signal"
 	"quant/internal/strategy"
@@ -38,6 +40,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "config.yaml", "配置文件路径")
 
 	rootCmd.AddCommand(fetchCmd())
+	rootCmd.AddCommand(marketCmd())
 	rootCmd.AddCommand(sectorCmd())
 	rootCmd.AddCommand(backtestCmd())
 	rootCmd.AddCommand(signalCmd())
@@ -50,6 +53,69 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func marketCmd() *cobra.Command {
+	var (
+		window      time.Duration
+		minCoverage float64
+		source      string
+	)
+	cmd := &cobra.Command{
+		Use:   "market",
+		Short: "查看全市场盘中行情",
+	}
+	realtimeCmd := &cobra.Command{
+		Use:   "realtime",
+		Short: "分批拉取全市场实时行情并计算盘中宽度",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !realtime.IsAShareTradingHours(time.Now()) {
+				return fmt.Errorf("全市场实时行情只在A股连续竞价时段运行（09:30-11:30、13:00-15:00，Asia/Shanghai）")
+			}
+			if window < time.Second {
+				return fmt.Errorf("刷新窗口至少为1秒")
+			}
+			if minCoverage <= 0 || minCoverage > 100 {
+				return fmt.Errorf("最低覆盖率应在(0,100]之间")
+			}
+			cfg := loadConfig()
+			ds, err := dataset.Load(dataset.LoadOptions{
+				RawDir:       cfg.Data.RawDir,
+				LatestOnly:   true,
+				FilterST:     true,
+				MinMarketCap: cfg.Fetch.MinMarketCap,
+			})
+			if err != nil {
+				return err
+			}
+			codes := market.SortedQuoteCodes(ds.CodeMap)
+			provider, err := realtime.NewProvider(source)
+			if err != nil {
+				return err
+			}
+			paced, ok := provider.(realtime.PacedProvider)
+			if !ok {
+				return fmt.Errorf("实时行情提供方不支持全市场限速刷新")
+			}
+			quotes, stats, fetchErr := paced.FetchPaced(codes, window)
+			status := market.AnalyzeIntraday(quotes, len(codes), ds.StkLimits)
+			status.Print()
+			fmt.Printf(">>> %s全市场行情: %d批，批次间隔%s，耗时%s\n", realtimeFetchSource(stats),
+				stats.Batches, stats.Interval.Round(time.Millisecond), stats.Elapsed.Round(time.Millisecond))
+			if fetchErr != nil {
+				return fetchErr
+			}
+			if status.CoveragePct < minCoverage {
+				return fmt.Errorf("盘中行情覆盖率%.1f%%低于%.1f%%，不改变仓位结论", status.CoveragePct, minCoverage)
+			}
+			return nil
+		},
+	}
+	realtimeCmd.Flags().DurationVar(&window, "window", time.Minute, "完成全市场刷新所用窗口，例如1m")
+	realtimeCmd.Flags().Float64Var(&minCoverage, "min-coverage", 90, "接受盘中快照所需的最低覆盖率")
+	realtimeCmd.Flags().StringVar(&source, "source", realtime.SourceAuto, "实时行情来源: auto、eastmoney、sina")
+	cmd.AddCommand(realtimeCmd)
+	return cmd
 }
 
 func sectorCmd() *cobra.Command {
@@ -397,13 +463,17 @@ func backtestCmd() *cobra.Command {
 
 func signalCmd() *cobra.Command {
 	var (
-		strategyNames []string
-		format        string
-		topN          int
-		watchN        int
-		realtimeOn    bool
+		strategyNames    []string
+		format           string
+		topN             int
+		watchN           int
+		realtimeOn       bool
+		marketRealtimeOn bool
+		marketWindow     time.Duration
+		realtimeSource   string
 	)
 	realtimeOn = true
+	marketRealtimeOn = true
 	watchN = 15
 
 	cmd := &cobra.Command{
@@ -412,14 +482,27 @@ func signalCmd() *cobra.Command {
 		Long:  `基于本地数据和多策略分析，生成今日的买入/卖出建议。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			inTradingHours := realtime.IsAShareTradingHours(time.Now())
+			useRealtime := realtimeOn && inTradingHours
+			var provider realtime.Provider
+			if useRealtime {
+				var err error
+				provider, err = realtime.NewProvider(realtimeSource)
+				if err != nil {
+					return err
+				}
+			}
 			result, err := signalworkflow.Run(context.Background(), signalworkflow.Options{
-				Config:        cfg,
-				StrategyNames: strategyNames,
-				TopN:          topN,
-				WatchN:        watchN,
-				Realtime:      realtimeOn,
-				PortfolioPath: "portfolio.yaml",
-				ForwardDir:    cfg.Data.RawDir + "/../forward_test",
+				Config:              cfg,
+				StrategyNames:       strategyNames,
+				TopN:                topN,
+				WatchN:              watchN,
+				Realtime:            useRealtime,
+				MarketRealtime:      useRealtime && marketRealtimeOn,
+				MarketRefreshWindow: marketWindow,
+				PortfolioPath:       "portfolio.yaml",
+				ForwardDir:          cfg.Data.RawDir + "/../forward_test",
+				RealtimeProvider:    provider,
 			})
 			if err != nil {
 				return err
@@ -445,6 +528,9 @@ func signalCmd() *cobra.Command {
 			if result.MarketStatus != nil {
 				result.MarketStatus.Print()
 			}
+			if result.IntradayMarket != nil && format == "table" {
+				result.IntradayMarket.Print()
+			}
 			if result.NewsErr != nil {
 				fmt.Printf("新闻分析: %v\n", result.NewsErr)
 			} else if result.NewsSummary != nil {
@@ -454,6 +540,16 @@ func signalCmd() *cobra.Command {
 				fmt.Printf("板块分析: %v\n", result.SectorErr)
 			} else if result.SectorReport != nil {
 				result.SectorReport.Print()
+			}
+			if realtimeOn && !inTradingHours && format == "table" {
+				fmt.Println(">>> 非A股连续竞价时段，未请求实时行情；请使用收盘后的Tushare日线")
+			}
+			if result.MarketRealtimeErr != nil && format == "table" {
+				fmt.Printf("全市场盘中行情: %v\n", result.MarketRealtimeErr)
+			} else if result.IntradayMarket != nil && format == "table" {
+				fmt.Printf(">>> %s全市场盘中行情已加载: %d/%d，%d批，耗时%s\n", realtimeFetchSource(result.MarketRealtimeStats),
+					result.IntradayMarket.Quoted, result.IntradayMarket.Requested,
+					result.MarketRealtimeStats.Batches, result.MarketRealtimeStats.Elapsed.Round(time.Millisecond))
 			}
 			if result.RealtimeErr != nil && format == "table" {
 				fmt.Printf("实时行情: %v\n", result.RealtimeErr)
@@ -496,9 +592,34 @@ func signalCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&format, "format", "f", "table", "输出格式: table, csv, json")
 	cmd.Flags().IntVarP(&topN, "top", "n", 0, "显示前 N 条信号")
 	cmd.Flags().IntVar(&watchN, "watch", 15, "显示观察机会数量（0=不显示）")
-	cmd.Flags().BoolVar(&realtimeOn, "realtime", true, "使用新浪实时行情对候选股和持仓做盘中校验")
+	cmd.Flags().BoolVar(&realtimeOn, "realtime", true, "仅在A股连续竞价时段使用实时行情")
+	cmd.Flags().BoolVar(&marketRealtimeOn, "market-realtime", true, "盘中加载全市场实时行情并复用至候选和持仓")
+	cmd.Flags().DurationVar(&marketWindow, "market-window", time.Minute, "盘中全市场行情刷新窗口，例如1m")
+	cmd.Flags().StringVar(&realtimeSource, "realtime-source", realtime.SourceAuto, "实时行情来源: auto、eastmoney、sina")
 
 	return cmd
+}
+
+func realtimeFetchSource(stats realtime.FetchStats) string {
+	name := stats.Source
+	switch name {
+	case realtime.SourceEastmoney:
+		name = "东方财富"
+	case realtime.SourceSina:
+		name = "新浪"
+	case "":
+		name = "实时"
+	}
+	if stats.FallbackFrom == "" {
+		return name
+	}
+	from := stats.FallbackFrom
+	if from == realtime.SourceEastmoney {
+		from = "东方财富"
+	} else if from == realtime.SourceSina {
+		from = "新浪"
+	}
+	return name + "（由" + from + "降级）"
 }
 
 func forwardCmd() *cobra.Command {
