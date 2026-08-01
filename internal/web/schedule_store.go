@@ -2,10 +2,70 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 )
+
+func (s *taskStore) createScheduledTask(ctx context.Context, kind, period string) (*Task, error) {
+	if !validTaskKind(kind) || period == "" {
+		return nil, fmt.Errorf("定时任务类型或周期无效")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var enabled bool
+	var lastPeriod string
+	if err := tx.QueryRowContext(ctx, `SELECT enabled, last_enqueued_period FROM web_schedules WHERE kind = ?`, kind).Scan(&enabled, &lastPeriod); err != nil {
+		return nil, err
+	}
+	if !enabled || lastPeriod == period {
+		return nil, nil
+	}
+	now := timestamp()
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO web_tasks(kind, status, created_at, message, trigger_source)
+		SELECT ?, ?, ?, ?, 'schedule'
+		WHERE NOT EXISTS (SELECT 1 FROM web_tasks WHERE kind = ? AND status IN (?, ?))`,
+		kind, TaskQueued, now, "任务已进入队列", kind, TaskQueued, TaskRunning)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed == 0 {
+		return nil, ErrTaskAlreadyActive
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	if err := addEvent(ctx, tx, id, now, fmt.Sprintf("已创建%s任务（schedule）", taskKindLabel(kind))); err != nil {
+		return nil, err
+	}
+	mark, err := tx.ExecContext(ctx, `
+		UPDATE web_schedules SET last_enqueued_period = ?, updated_at = ?
+		WHERE kind = ? AND enabled = 1 AND last_enqueued_period <> ?`, period, now, kind, period)
+	if err != nil {
+		return nil, err
+	}
+	marked, err := mark.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if marked != 1 {
+		return nil, errors.New("定时设置已变化，取消本次入队")
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.task(ctx, id, false)
+}
 
 type Schedule struct {
 	Kind               string
@@ -77,13 +137,6 @@ func (s *taskStore) updateSchedule(ctx context.Context, schedule Schedule) error
 		return fmt.Errorf("定时设置不存在: %s", schedule.Kind)
 	}
 	return nil
-}
-
-func (s *taskStore) markScheduleEnqueued(ctx context.Context, kind, period string) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE web_schedules SET last_enqueued_period = ?, updated_at = ? WHERE kind = ?`,
-		period, timestamp(), kind)
-	return err
 }
 
 func parseScheduleMonths(value string) (map[int]bool, error) {

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -57,6 +58,10 @@ func TestTaskStoreLifecycleRejectsConcurrentDailyTask(t *testing.T) {
 	}
 	if len(stored.Events) < 4 {
 		t.Fatalf("events = %+v, want lifecycle events", stored.Events)
+	}
+	latest, err := store.latestDailyReport(ctx)
+	if err != nil || latest == nil || latest.TargetDate != "20260731" {
+		t.Fatalf("latest daily report=%+v err=%v", latest, err)
 	}
 }
 
@@ -147,7 +152,7 @@ func TestTaskRunnerConvertsPanicToFailedTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := newTaskRunner(store, func(context.Context, string, func(string)) (*DailyReport, error) {
+	runner := newTaskRunner(store, func(context.Context, string, func(string)) (*TaskResult, error) {
 		panic("boom")
 	})
 	runner.start()
@@ -184,13 +189,13 @@ func TestServerCreatesAndRendersDailyReport(t *testing.T) {
 	server, err := newServer(Options{
 		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath)}},
 		DatabasePath: dbPath,
-	}, func(_ context.Context, _ string, progress func(string)) (*DailyReport, error) {
+	}, func(_ context.Context, _ string, progress func(string)) (*TaskResult, error) {
 		progress("测试任务已完成")
-		return &DailyReport{
+		return analysisTaskResult(&DailyReport{
 			TargetDate: "20260731",
 			TradeDate:  "20260731",
 			Position:   signal.PositionDecision{Action: signal.PositionActionCash, Advice: "等待确认"},
-		}, nil
+		}), nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -245,5 +250,20 @@ func TestReportFromDailySuppressesFormalBuysWhenCash(t *testing.T) {
 	}
 	if len(report.Recommendations) != 0 {
 		t.Fatalf("recommendations = %+v, want none when cash", report.Recommendations)
+	}
+}
+
+func TestDecodeTaskResultKeepsLegacyCompatibility(t *testing.T) {
+	analysisJSON, err := json.Marshal(DailyReport{Version: "daily-report-v1", TradeDate: "20260731"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis, err := decodeTaskResult(analysisJSON)
+	if err != nil || analysis.Analysis == nil || analysis.Analysis.TradeDate != "20260731" {
+		t.Fatalf("analysis=%+v err=%v", analysis, err)
+	}
+	operation, err := decodeTaskResult([]byte(`{"version":"backup-report-v1","backup":{"path":"legacy.tar.gz","files":2}}`))
+	if err != nil || operation.Backup == nil || operation.Backup.Path != "legacy.tar.gz" || operation.Analysis != nil {
+		t.Fatalf("operation=%+v err=%v", operation, err)
 	}
 }

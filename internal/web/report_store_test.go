@@ -6,16 +6,30 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	quantai "quant/internal/ai"
 	"quant/internal/config"
 	"quant/internal/portfolio"
 	"quant/internal/value"
 )
+
+type fakeAICompleter struct {
+	system string
+	prompt string
+}
+
+func (f *fakeAICompleter) Complete(_ context.Context, system, prompt string) (*quantai.Completion, error) {
+	f.system, f.prompt = system, prompt
+	return &quantai.Completion{Content: "报告原始数据\n测试\n模型推断\n测试\n数据不足\n无\n风险提示\n仅供参考", PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20}, nil
+}
+
+func (f *fakeAICompleter) Model() string { return "deepseek-test" }
 
 func TestFinishPersistsIndexedReportAndImmutablePortfolioSnapshot(t *testing.T) {
 	store, err := openTaskStore(filepath.Join(t.TempDir(), "web.db"))
@@ -119,7 +133,9 @@ func TestReportCenterRendersListAndDetail(t *testing.T) {
 	server, err := newServer(Options{
 		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath)}},
 		DatabasePath: dbPath,
-	}, func(context.Context, string, func(string)) (*DailyReport, error) { return &DailyReport{}, nil })
+	}, func(context.Context, string, func(string)) (*TaskResult, error) {
+		return analysisTaskResult(&DailyReport{}), nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,13 +188,13 @@ func TestValueTaskRendersDedicatedReport(t *testing.T) {
 	server, err := newServer(Options{
 		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath), RawDir: t.TempDir()}},
 		DatabasePath: dbPath,
-	}, func(_ context.Context, kind string, _ func(string)) (*DailyReport, error) {
+	}, func(_ context.Context, kind string, _ func(string)) (*TaskResult, error) {
 		if kind != taskKindValueMonthly {
 			t.Fatalf("kind=%s", kind)
 		}
-		return reportFromValueMonthly(&value.MonthlyReport{
+		return analysisTaskResult(reportFromValueMonthly(&value.MonthlyReport{
 			Kind: "monthly_screen", ScreenDate: "20260731", Policy: value.DefaultPolicy(), Scanned: 10, Qualified: 1,
-		}), nil
+		})), nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -208,4 +224,91 @@ func TestValueTaskRendersDedicatedReport(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "月度价值筛选") || !strings.Contains(response.Body.String(), "候选池只用于跟踪") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
+}
+
+func TestOperationalTaskResultIsNotIndexedAsAnalysisReport(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "web.db")
+	server, err := newServer(Options{
+		Config: &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath), RawDir: t.TempDir()}}, DatabasePath: dbPath,
+	}, func(_ context.Context, kind string, _ func(string)) (*TaskResult, error) {
+		if kind != taskKindBackup {
+			t.Fatalf("kind=%s", kind)
+		}
+		return &TaskResult{ResultVersion: "task-result-v1", GeneratedAt: time.Now().UTC(), Backup: &BackupReport{Path: "/safe/backup.tar.gz", Files: 3, Size: 42}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	task, err := server.runner.enqueueKind(context.Background(), taskKindBackup, "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, server.store, task.ID, TaskSucceeded)
+	reports, err := server.store.reports(context.Background(), ReportFilter{})
+	if err != nil || len(reports) != 0 {
+		t.Fatalf("operational result leaked into report center: %+v err=%v", reports, err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/tasks/"+strconv.FormatInt(task.ID, 10), nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "备份产物") || strings.Contains(response.Body.String(), "日报（") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestReportAIQuestionPersistsUsageAndScopedPrompt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "web.db")
+	fake := &fakeAICompleter{}
+	server, err := newServer(Options{
+		Config: &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath), RawDir: t.TempDir()}}, DatabasePath: dbPath, AIClient: fake,
+	}, func(context.Context, string, func(string)) (*TaskResult, error) {
+		return analysisTaskResult(&DailyReport{}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	task, err := server.store.createDaily(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.claimNext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.store.finish(context.Background(), task.ID, &DailyReport{Version: "daily-report-v1", TradeDate: "20260731", DataVersion: "20260731"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	reports, _ := server.store.reports(context.Background(), ReportFilter{})
+	values := url.Values{"csrf_token": {server.csrfToken}, "question": {"这份报告的主要风险？"}}
+	request := httptest.NewRequest(http.MethodPost, "/reports/"+strconv.FormatInt(reports[0].ID, 10)+"/ask", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	answers, err := server.store.aiAnswers(context.Background(), reports[0].ID)
+	if err != nil || len(answers) != 1 || answers[0].TotalTokens != 20 {
+		t.Fatalf("answers=%+v err=%v", answers, err)
+	}
+	if !strings.Contains(fake.system, "报告原始数据") || !strings.Contains(fake.prompt, "20260731") || strings.Contains(fake.prompt, "portfolio_transactions") {
+		t.Fatalf("unsafe or incomplete AI prompt: system=%q prompt=%q", fake.system, fake.prompt)
+	}
+}
+
+func waitForTaskStatus(t *testing.T, store *taskStore, id int64, status TaskStatus) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		task, err := store.task(context.Background(), id, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.Status == status {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("task %d did not reach %s", id, status)
 }

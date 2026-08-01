@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -40,7 +41,9 @@ func TestSchedulePageUpdatesPersistedConfiguration(t *testing.T) {
 	server, err := newServer(Options{
 		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath), RawDir: t.TempDir()}},
 		DatabasePath: dbPath,
-	}, func(context.Context, string, func(string)) (*DailyReport, error) { return &DailyReport{}, nil })
+	}, func(context.Context, string, func(string)) (*TaskResult, error) {
+		return analysisTaskResult(&DailyReport{}), nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,12 +74,12 @@ func TestSchedulerEnqueuesDueTaskOnceThroughRunner(t *testing.T) {
 	}
 	defer store.close()
 	var executions atomic.Int32
-	runner := newTaskRunner(store, func(_ context.Context, kind string, _ func(string)) (*DailyReport, error) {
+	runner := newTaskRunner(store, func(_ context.Context, kind string, _ func(string)) (*TaskResult, error) {
 		if kind != taskKindValueMonthly {
 			t.Fatalf("kind=%s", kind)
 		}
 		executions.Add(1)
-		return &DailyReport{Version: "test", TradeDate: "20260803"}, nil
+		return analysisTaskResult(&DailyReport{Version: "test", TradeDate: "20260803"}), nil
 	})
 	runner.start()
 	defer runner.stop()
@@ -113,4 +116,56 @@ func TestSchedulerEnqueuesDueTaskOnceThroughRunner(t *testing.T) {
 			t.Fatalf("schedule=%+v", schedule)
 		}
 	}
+}
+
+func TestScheduledPeriodIsNotConsumedByActiveManualTask(t *testing.T) {
+	store, err := openTaskStore(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	if err := store.updateSchedule(context.Background(), Schedule{Kind: taskKindDaily, Enabled: true, Hour: 17, DayOfMonth: 1}); err != nil {
+		t.Fatal(err)
+	}
+	manual, err := store.createTask(context.Background(), taskKindDaily, "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newTaskRunner(store, func(context.Context, string, func(string)) (*TaskResult, error) {
+		return analysisTaskResult(&DailyReport{}), nil
+	})
+	scheduler := newTaskScheduler(store, runner, t.TempDir())
+	scheduler.isTradingDay = func(time.Time) bool { return true }
+	now := time.Date(2026, 8, 3, 18, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	scheduler.runDue(now)
+	assertSchedulePeriod(t, store, taskKindDaily, "")
+	if _, err := store.claimNext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.finish(context.Background(), manual.ID, &DailyReport{}, errors.New("manual failed")); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.runDue(now)
+	assertSchedulePeriod(t, store, taskKindDaily, "20260803")
+	queued, err := store.claimNext(context.Background())
+	if err != nil || queued == nil || queued.TriggerSource != "schedule" {
+		t.Fatalf("scheduled task=%+v err=%v", queued, err)
+	}
+}
+
+func assertSchedulePeriod(t *testing.T, store *taskStore, kind, want string) {
+	t.Helper()
+	schedules, err := store.schedules(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, schedule := range schedules {
+		if schedule.Kind == kind {
+			if schedule.LastEnqueuedPeriod != want {
+				t.Fatalf("period=%q want=%q", schedule.LastEnqueuedPeriod, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("schedule %s not found", kind)
 }

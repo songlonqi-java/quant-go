@@ -349,11 +349,11 @@ func (s *taskStore) latestDailyReport(ctx context.Context) (*DailyReport, error)
 	if err != nil {
 		return nil, err
 	}
-	var report DailyReport
-	if err := json.Unmarshal([]byte(encoded), &report); err != nil {
+	result, err := decodeTaskResult([]byte(encoded))
+	if err != nil {
 		return nil, fmt.Errorf("解析最近日报: %w", err)
 	}
-	return &report, nil
+	return result.Analysis, nil
 }
 
 func portfolioLedgerFromQuery(ctx context.Context, queryer interface {

@@ -138,7 +138,9 @@ func TestPortfolioHTTPCreateRequiresCSRFAndRendersPage(t *testing.T) {
 	server, err := newServer(Options{
 		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath)}},
 		DatabasePath: dbPath,
-	}, func(context.Context, string, func(string)) (*DailyReport, error) { return &DailyReport{}, nil })
+	}, func(context.Context, string, func(string)) (*TaskResult, error) {
+		return analysisTaskResult(&DailyReport{}), nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

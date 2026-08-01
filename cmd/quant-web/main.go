@@ -43,12 +43,18 @@ func main() {
 	}
 	defer app.Close()
 
+	writeTimeout := 90 * time.Second
+	if cfg.AI.Enabled {
+		if configured := time.Duration(cfg.AI.TimeoutSec)*time.Second + 30*time.Second; configured > writeTimeout {
+			writeTimeout = configured
+		}
+	}
 	server := &http.Server{
 		Addr:              address,
 		Handler:           app,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      90 * time.Second,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       2 * time.Minute,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

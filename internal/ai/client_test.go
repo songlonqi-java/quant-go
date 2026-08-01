@@ -21,19 +21,21 @@ func TestCompleteUsesCompatibleEndpointAndConfiguration(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"  answer  "}}]}`))
+		// Some OpenAI-compatible providers omit total_tokens. The client should
+		// still persist a useful total from the two component counts.
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"  answer  "}}],"usage":{"prompt_tokens":10,"completion_tokens":4}}`))
 	}))
 	defer server.Close()
 	client, err := New(Config{BaseURL: server.URL + "/v1/", APIKey: "secret", Model: "deepseek-chat", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer, err := client.Complete(context.Background(), "system", "question")
+	completion, err := client.Complete(context.Background(), "system", "question")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if answer != "answer" || got.Model != "deepseek-chat" || len(got.Messages) != 2 {
-		t.Fatalf("unexpected response/request: %q %#v", answer, got)
+	if completion.Content != "answer" || completion.TotalTokens != 14 || got.Model != "deepseek-chat" || len(got.Messages) != 2 {
+		t.Fatalf("unexpected response/request: %#v %#v", completion, got)
 	}
 }
 

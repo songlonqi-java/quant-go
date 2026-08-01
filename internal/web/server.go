@@ -36,7 +36,7 @@ type Options struct {
 }
 
 type AICompleter interface {
-	Complete(context.Context, string, string) (string, error)
+	Complete(context.Context, string, string) (*quantai.Completion, error)
 	Model() string
 }
 
@@ -87,6 +87,10 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 	if backupDir == "" {
 		backupDir = filepath.Join(opts.Config.Data.MetaDir, "backups")
 	}
+	if err := validateBackupLocation(opts.Config.Data.RawDir, backupDir); err != nil {
+		store.close()
+		return nil, fmt.Errorf("配置备份目录: %w", err)
+	}
 	server := &Server{
 		store: store, portfolioPath: opts.PortfolioPath, csrfToken: csrfToken, ai: opts.AIClient,
 		config: opts.Config, backupDir: backupDir, backupRetention: opts.Config.Backup.Retention,
@@ -135,14 +139,22 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 }
 
 func defaultExecutor(opts Options, server *Server) taskExecutor {
-	return func(ctx context.Context, kind string, update func(string)) (*DailyReport, error) {
-		ledger, err := server.store.portfolioLedger(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("加载 SQLite 交易流水: %w", err)
-		}
+	return func(ctx context.Context, kind string, update func(string)) (*TaskResult, error) {
 		var report *DailyReport
+		var ledger *portfolio.Ledger
+		var err error
+		loadLedger := func() error {
+			ledger, err = server.store.portfolioLedger(ctx)
+			if err != nil {
+				return fmt.Errorf("加载 SQLite 交易流水: %w", err)
+			}
+			return nil
+		}
 		switch kind {
 		case taskKindDaily:
+			if err := loadLedger(); err != nil {
+				return nil, err
+			}
 			result, runErr := daily.Run(ctx, daily.Options{
 				Config:          opts.Config,
 				PortfolioLedger: ledger,
@@ -155,9 +167,11 @@ func defaultExecutor(opts Options, server *Server) taskExecutor {
 			err = runErr
 			report = reportFromDaily(result)
 		case taskKindValueMonthly:
-			readiness, readyErr := value.CheckReadiness(opts.Config.Data.RawDir)
-			if readyErr != nil || !readiness.Ready {
-				return nil, fmt.Errorf("慢频数据未就绪，请先运行慢频数据准备任务")
+			if err := requireValueReadiness(opts.Config.Data.RawDir); err != nil {
+				return nil, err
+			}
+			if err := loadLedger(); err != nil {
+				return nil, err
 			}
 			update("运行月度价值筛选：读取本地估值、财务和行业快照")
 			result, runErr := value.Monthly(value.MonthlyOptions{
@@ -166,24 +180,42 @@ func defaultExecutor(opts Options, server *Server) taskExecutor {
 			err = runErr
 			report = reportFromValueMonthly(result)
 		case taskKindValueQuarterly:
+			if err := requireValueReadiness(opts.Config.Data.RawDir); err != nil {
+				return nil, err
+			}
+			if err := loadLedger(); err != nil {
+				return nil, err
+			}
 			update("运行季度价值复核：复核最近月度价值候选池")
 			result, runErr := value.Quarterly(value.QuarterlyOptions{RawDir: opts.Config.Data.RawDir})
 			err = runErr
 			report = reportFromValueQuarterly(result)
 		case taskKindBackup:
 			result, runErr := server.createBackup(ctx, update)
-			err = runErr
-			report = &DailyReport{Version: "backup-report-v1", GeneratedAt: time.Now().UTC(), CodeVersion: currentCodeVersion(), Backup: result}
+			return &TaskResult{ResultVersion: "task-result-v1", GeneratedAt: time.Now().UTC(), Backup: result}, runErr
 		case taskKindValuePrepare:
 			result, runErr := valueprepare.Run(ctx, opts.Config, update)
-			err = runErr
-			report = &DailyReport{Version: "value-preparation-report-v1", GeneratedAt: time.Now().UTC(), CodeVersion: currentCodeVersion(), ValuePreparation: result}
+			return &TaskResult{ResultVersion: "task-result-v1", GeneratedAt: time.Now().UTC(), ValuePreparation: result}, runErr
 		default:
 			return nil, fmt.Errorf("不支持的任务类型: %s", kind)
 		}
-		report.SnapshotLedger = append([]portfolio.Transaction(nil), ledger.Transactions...)
-		return report, err
+		if report != nil && ledger != nil {
+			report.SnapshotLedger = make([]portfolio.Transaction, len(ledger.Transactions))
+			copy(report.SnapshotLedger, ledger.Transactions)
+		}
+		return analysisTaskResult(report), err
 	}
+}
+
+func requireValueReadiness(rawDir string) error {
+	readiness, err := value.CheckReadiness(rawDir)
+	if err != nil {
+		return fmt.Errorf("检查慢频数据就绪状态: %w", err)
+	}
+	if !readiness.Ready {
+		return fmt.Errorf("慢频数据未就绪，请先运行慢频数据准备任务：%s", strings.Join(readiness.Issues, "；"))
+	}
+	return nil
 }
 
 func (s *Server) handlePortfolioImport(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +373,7 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 		Status:    validReportStatus(r.URL.Query().Get("status")),
 		Limit:     100,
 	}
-	if filter.Kind != "" && !validTaskKind(filter.Kind) {
+	if filter.Kind != "" && !validReportKind(filter.Kind) {
 		filter.Kind = ""
 	}
 	if filter.TradeDate != "" {
@@ -380,6 +412,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 	data := reportPageData{Record: report, CSRFToken: s.csrfToken}
 	if snapshot != nil {
+		data.HasSnapshot = true
 		data.Snapshot = snapshot.Transactions
 	}
 	data.AIEnabled = s.ai != nil
@@ -421,18 +454,38 @@ func (s *Server) handleReportAsk(w http.ResponseWriter, r *http.Request) {
 		redirectAIError(w, r, id, err)
 		return
 	}
-	system := "你是本地量化报告解释助手。严格区分报告原始数据、你的推断和数据不足；不得声称执行交易，不得覆盖空仓或观望约束。"
+	system := aiSystemPrompt(record.Kind)
 	prompt := "以下是用户主动选择的结构化报告摘要：\n" + contextJSON + "\n\n用户问题：" + question
-	answer, err := s.ai.Complete(r.Context(), system, prompt)
+	completion, err := s.ai.Complete(r.Context(), system, prompt)
 	if err != nil {
 		redirectAIError(w, r, id, s.safeAIError(err))
 		return
 	}
-	if err := s.store.saveAIAnswer(r.Context(), id, question, answer, s.ai.Model()); err != nil {
+	if completion == nil {
+		redirectAIError(w, r, id, fmt.Errorf("AI 响应为空"))
+		return
+	}
+	if err := validateAIAnswer(completion.Content); err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	if err := s.store.saveAIAnswer(r.Context(), id, question, completion.Content, s.ai.Model(), completion); err != nil {
 		redirectAIError(w, r, id, err)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/reports/%d", id), http.StatusSeeOther)
+}
+
+func aiSystemPrompt(kind string) string {
+	base := "你是本地量化报告解释助手。回答必须依次使用四个明确标题：报告原始数据、模型推断、数据不足、风险提示。不得声称执行交易，不得修改持仓或任务，不得覆盖空仓或观望约束。必须写明结论仅基于报告日期的数据。"
+	switch kind {
+	case taskKindValueMonthly:
+		return base + " 月度价值候选只用于跟踪；重点解释行业相对估值、ROE、利润和营收变化，不得把候选直接表述为买入指令。"
+	case taskKindValueQuarterly:
+		return base + " 季度复核应说明来源月度快照、基本面变化和估值回归，不得省略数据缺口。"
+	default:
+		return base + " 日终报告应区分正式推荐、观察机会、量化信号、资金与新闻确认；观察机会不能升级为正式买入。"
+	}
 }
 
 func (s *Server) safeAIError(err error) error {
@@ -654,13 +707,14 @@ type reportsPageData struct {
 }
 
 type reportPageData struct {
-	Record    *ReportRecord
-	Snapshot  []portfolio.Transaction
-	Answers   []AIAnswer
-	AIEnabled bool
-	AIError   string
-	CSRFToken string
-	Refresh   bool
+	Record      *ReportRecord
+	Snapshot    []portfolio.Transaction
+	HasSnapshot bool
+	Answers     []AIAnswer
+	AIEnabled   bool
+	AIError     string
+	CSRFToken   string
+	Refresh     bool
 }
 
 type schedulesPageData struct {
@@ -716,6 +770,7 @@ func renderPage(w http.ResponseWriter, body string, data any) {
 	t, err := template.New("page").Funcs(template.FuncMap{
 		"shortTime": shortTime,
 		"pct":       func(v float64) string { return fmt.Sprintf("%+.2f%%", v) },
+		"coverage":  func(v float64) string { return fmt.Sprintf("%.1f%%", v*100) },
 		"join":      strings.Join,
 		"kindLabel": taskKindLabel,
 	}).Parse(pageTemplate + body)
@@ -788,16 +843,17 @@ const reportsTemplate = `{{define "body"}}<h1>报告中心</h1>
 
 const reportCenterDetailTemplate = `{{define "body"}}<p><a href="/reports">← 返回报告中心</a></p><section class="card"><h1>报告 #{{.Record.ID}}</h1><div class="grid"><div><span class="muted">任务</span><div><a href="/tasks/{{.Record.TaskID}}">#{{.Record.TaskID}}</a> · {{.Record.TaskStatus}}</div></div><div><span class="muted">交易日 / 数据版本</span><div>{{.Record.TradeDate}} / {{.Record.DataVersion}}</div></div><div><span class="muted">报告 / 代码版本</span><div>{{.Record.ReportVersion}} / {{.Record.CodeVersion}}</div></div><div><span class="muted">策略版本</span><div>{{.Record.StrategyVersion}}</div></div><div><span class="muted">持仓快照</span><div>{{.Record.SnapshotTransactions}} 笔交易</div></div></div></section>
 {{with .Record.Report}}<section class="card"><h2>分析摘要</h2>{{with .ValueMonthly}}<p>扫描 {{.Scanned}} 只，符合规则 {{.Qualified}} 只，报告展示 {{len .Candidates}} 只；规则 {{.Policy.Version}}。</p>{{else}}{{with .ValueQuarterly}}<p>复核 {{len .Items}} 个价值候选；规则 {{.Policy.Version}}，来源快照 {{.SourceSnapshot}}。</p>{{else}}<p>仓位策略：<strong>{{.Position.Action}}</strong>　{{.Position.Advice}}</p><p>正式信号 {{len .Signals}} 条，正式买入 {{len .Recommendations}} 条，观察机会 {{len .Watchlist}} 条。</p>{{end}}{{end}}{{if .Warnings}}{{range .Warnings}}<div class="warn">{{.}}</div>{{end}}{{end}}</section>{{end}}
-<section class="card"><h2>执行时持仓流水快照</h2>{{if .Snapshot}}<div class="table-wrap"><table><thead><tr><th>日期</th><th>股票</th><th>方向</th><th>股数</th><th>价格</th><th>备注</th></tr></thead><tbody>{{range .Snapshot}}<tr><td>{{.Date}}</td><td>{{.Code}}</td><td>{{.Action}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.3f" .Price}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">旧报告没有持仓流水快照。</p>{{end}}</section>
-<section class="card"><h2>AI 报告问答</h2>{{if .AIError}}<div class="warn">{{.AIError}}</div>{{end}}{{if .AIEnabled}}<form method="post" action="/reports/{{.Record.ID}}/ask"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>只基于当前报告提问</label><textarea name="question" maxlength="1000" rows="4" style="width:100%;box-sizing:border-box;margin:8px 0" required></textarea><button type="submit">提交问题</button></form>{{else}}<p class="muted">AI 未启用。请配置 ai.enabled、base_url、model 和 API Key 后重启服务。</p>{{end}}{{range .Answers}}<div class="card"><p><strong>问：</strong>{{.Question}}</p><p style="white-space:pre-wrap"><strong>答：</strong>{{.Answer}}</p><p class="muted">{{.Model}} · {{shortTime .CreatedAt}}</p></div>{{end}}</section>{{end}}`
+<section class="card"><h2>执行时持仓流水快照</h2>{{if .HasSnapshot}}{{if .Snapshot}}<div class="table-wrap"><table><thead><tr><th>日期</th><th>股票</th><th>方向</th><th>股数</th><th>价格</th><th>备注</th></tr></thead><tbody>{{range .Snapshot}}<tr><td>{{.Date}}</td><td>{{.Code}}</td><td>{{.Action}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.3f" .Price}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">执行时交易流水为空。</p>{{end}}{{else}}<p class="muted">旧报告没有持仓流水快照。</p>{{end}}</section>
+<section class="card"><h2>AI 报告问答</h2><div class="warn">AI 只解释当前报告（数据日期 {{.Record.TradeDate}}），输出不是交易指令，也不能覆盖空仓或观望约束。</div>{{if .AIError}}<div class="warn">{{.AIError}}</div>{{end}}{{if .AIEnabled}}<form method="post" action="/reports/{{.Record.ID}}/ask"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>只基于当前报告提问</label><textarea name="question" maxlength="1000" rows="4" style="width:100%;box-sizing:border-box;margin:8px 0" required></textarea><button type="submit">提交问题</button></form>{{else}}<p class="muted">AI 未启用。请配置 ai.enabled、base_url、model 和 API Key 后重启服务。</p>{{end}}{{range .Answers}}<div class="card"><p><strong>问：</strong>{{.Question}}</p><p style="white-space:pre-wrap"><strong>答：</strong>{{.Answer}}</p><p class="muted">{{.Model}} · {{shortTime .CreatedAt}}{{if .TotalTokens}} · tokens {{.PromptTokens}} + {{.CompletionTokens}} = {{.TotalTokens}}{{end}}</p></div>{{end}}</section>{{end}}`
 
 const schedulesTemplate = `{{define "body"}}<h1>本地定时任务</h1>{{if eq .Status "saved"}}<p class="success">定时设置已保存。</p>{{end}}{{if .Error}}<div class="warn">保存失败：{{.Error}}</div>{{end}}<section class="card"><p>定时器只在本地 A 股交易日创建任务，实际执行仍经过单 worker。服务关闭期间不会执行；重启后若当天/当月已到设置时间且尚未入队，会补充入队一次。</p><p class="muted">交易日来自本地 trade_cal.parquet；本地交易日历不包含当天时不会自动入队。价值任务读取已经准备好的慢频数据，不自动调用盘中行情。</p></section>{{range .Schedules}}<section class="card"><h2>{{kindLabel .Kind}}</h2><form class="trade-form" method="post" action="/schedules/{{.Kind}}"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><label>启用<select name="enabled"><option value="0" {{if not .Enabled}}selected{{end}}>关闭</option><option value="1" {{if .Enabled}}selected{{end}}>启用</option></select></label><label>小时<input type="number" name="hour" min="0" max="23" value="{{.Hour}}" required></label><label>分钟<input type="number" name="minute" min="0" max="59" value="{{.Minute}}" required></label><label>起始日（1-28）<input type="number" name="day_of_month" min="1" max="28" value="{{.DayOfMonth}}" required></label>{{if eq .Kind "value_quarterly"}}<label>执行月份<input name="months" value="{{.Months}}" required></label>{{else}}<input type="hidden" name="months" value="">{{end}}<button type="submit">保存</button></form><p class="muted">时区 {{.Timezone}} · 上次入队周期 {{if .LastEnqueuedPeriod}}{{.LastEnqueuedPeriod}}{{else}}无{{end}}</p></section>{{end}}{{end}}`
 
-const monitoringTemplate = `{{define "body"}}<h1>运行监控</h1><div class="grid"><section class="card"><span class="muted">交易日历</span><div class="value">{{if .Status.CalendarReady}}{{.Status.CalendarLatest}}{{else}}缺失{{end}}</div></section><section class="card"><span class="muted">磁盘可用</span><div class="value">{{printf "%.1f GB" .Status.DiskFreeGB}}</div></section><section class="card"><span class="muted">近 7 日失败任务</span><div class="value">{{.Status.RecentFailed}}</div></section><section class="card"><span class="muted">最近备份</span><div>{{if .Status.LatestBackup}}{{.Status.LatestBackup}} · {{.Status.LatestBackupSize}} bytes{{else}}无{{end}}</div></section></div><section class="card"><h2>慢频价值数据</h2>{{if .Status.ValueError}}<div class="warn">{{.Status.ValueError}}</div>{{else}}{{with .Status.ValueReadiness}}<p>数据日期 {{.TradeDate}}，股票 {{.Stocks}}，估值覆盖 {{.DailyBasicCount}}，财务覆盖 {{.FinancialCount}}，行业快照 {{if .SectorReady}}就绪{{else}}缺失{{end}}。</p>{{range .Issues}}<div class="warn">{{.}}</div>{{end}}{{if .Ready}}<p class="success">慢频价值输入已就绪。</p>{{end}}{{end}}{{end}}</section>{{end}}`
+const monitoringTemplate = `{{define "body"}}<h1>运行监控</h1><div class="grid"><section class="card"><span class="muted">交易日历</span>{{if .Status.CalendarReady}}<div class="value">{{.Status.CalendarLatest}}</div>{{else}}<div class="warn">未知：{{.Status.CalendarError}}</div>{{end}}</section><section class="card"><span class="muted">磁盘可用</span>{{if .Status.DiskKnown}}<div class="value">{{printf "%.1f GB" .Status.DiskFreeGB}}</div>{{else}}<div class="warn">未知：{{.Status.DiskError}}</div>{{end}}</section><section class="card"><span class="muted">近 7 日失败任务</span>{{if .Status.FailedTasksKnown}}<div class="value">{{.Status.RecentFailed}}</div>{{else}}<div class="warn">未知：{{.Status.FailedTasksError}}</div>{{end}}</section><section class="card"><span class="muted">最近备份</span>{{if .Status.BackupError}}<div class="warn">未知：{{.Status.BackupError}}</div>{{else}}<div>{{if .Status.LatestBackup}}{{.Status.LatestBackup}} · {{.Status.LatestBackupSize}} bytes{{else}}无{{end}}</div>{{end}}</section></div><section class="card"><h2>慢频价值数据</h2>{{if .Status.ValueError}}<div class="warn">{{.Status.ValueError}}</div>{{else}}{{with .Status.ValueReadiness}}<p>数据日期 {{.TradeDate}}，股票 {{.Stocks}}，估值覆盖 {{.DailyBasicCount}}/{{.Stocks}}（{{coverage .DailyBasicCoverage}}），财务覆盖 {{.FinancialCount}}/{{.Stocks}}（{{coverage .FinancialCoverage}}），行业覆盖 {{.SectorCount}}/{{.Stocks}}（{{coverage .SectorCoverage}}）。</p>{{range .Issues}}<div class="warn">{{.}}</div>{{end}}{{if .Ready}}<p class="success">慢频价值输入已就绪。</p>{{end}}{{end}}{{end}}</section>{{end}}`
 
 const taskTemplate = `{{define "body"}}
 <p><a href="/">← 返回任务列表</a></p><section class="card"><h2>{{kindLabel .Task.Kind}} #{{.Task.ID}}</h2><p>状态：<span class="tag">{{.Task.Status}}</span>　来源：{{.Task.TriggerSource}}　创建：{{shortTime .Task.CreatedAt}}　开始：{{shortTime .Task.StartedAt}}　结束：{{shortTime .Task.FinishedAt}}</p><p>{{.Task.Message}}</p>{{if .Task.Error}}<p class="error">失败原因：{{.Task.Error}}</p>{{end}}{{if .Refresh}}<p class="running">任务执行中，页面每 2 秒自动刷新。</p>{{end}}</section>
 <section class="card"><h2>执行记录</h2><ol class="events">{{range .Task.Events}}<li><span class="muted">{{shortTime .CreatedAt}}</span>　{{.Message}}</li>{{end}}</ol></section>
+{{with .Task.Result}}{{with .Backup}}<section class="card"><h2>备份产物</h2><p><strong>{{.Path}}</strong></p><p>文件 {{.Files}} 个 · 大小 {{.Size}} bytes · 创建于 {{shortTime .CreatedAt.String}}</p></section>{{end}}{{with .ValuePreparation}}{{with .Readiness}}<section class="card"><h2>慢频数据准备结果</h2><p>数据日期 {{.TradeDate}}，股票 {{.Stocks}}；估值覆盖 {{coverage .DailyBasicCoverage}}，财务覆盖 {{coverage .FinancialCoverage}}，行业覆盖 {{coverage .SectorCoverage}}。</p>{{range .Issues}}<div class="warn">{{.}}</div>{{end}}{{if .Ready}}<p class="success">慢频价值输入已就绪。</p>{{end}}</section>{{end}}{{end}}{{end}}
 {{with .Task.Report}}{{with .ValueMonthly}}<section class="card"><h2>月度价值筛选（{{.ScreenDate}}）</h2><p>扫描 {{.Scanned}} 只，符合规则 {{.Qualified}} 只；规则 {{.Policy.Version}}。候选池只用于跟踪，不等同于立即买入。</p>{{if .Candidates}}<table><thead><tr><th>股票</th><th>行业</th><th>估值口径</th><th>折价</th><th>ROE</th><th>利润增速</th><th>营收增速</th><th>评分</th></tr></thead><tbody>{{range .Candidates}}<tr><td>{{.Code}} {{.Name}}</td><td>{{.Industry}}</td><td>{{.ValuationBasis}}</td><td>{{pct .DiscountPct}}</td><td>{{pct .ROE}}</td><td>{{pct .ProfitGrowth}}</td><td>{{pct .RevenueGrowth}}</td><td>{{printf "%.1f" .Score}}</td></tr>{{end}}</tbody></table>{{else}}<p>无候选，不因数量不足放宽规则。</p>{{end}}</section>{{else}}{{with .ValueQuarterly}}<section class="card"><h2>季度价值复核（{{.ReviewDate}}）</h2><p class="muted">来源月度快照：{{.SourceSnapshot}}</p>{{if .Items}}<table><thead><tr><th>股票</th><th>行业</th><th>决定</th><th>折价</th><th>ROE</th><th>说明</th></tr></thead><tbody>{{range .Items}}<tr><td>{{.Code}} {{.Name}}</td><td>{{.Industry}}</td><td>{{.Decision}}</td><td>{{pct .DiscountPct}}</td><td>{{pct .ROE}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table>{{else}}<p>无复核对象。</p>{{end}}</section>{{else}}<section class="card"><h2>日报（{{.TradeDate}}）</h2><p class="muted">目标日期 {{.TargetDate}} · 生成于 {{shortTime .GeneratedAt.String}}</p>{{if .Warnings}}{{range .Warnings}}<div class="warn">{{.}}</div>{{end}}{{end}}
 <div class="grid"><div><span class="muted">仓位策略</span><div class="value">{{.Position.Action}}</div><div>{{.Position.Advice}}</div></div>{{with .Market}}<div><span class="muted">{{.IndexCode}}</span><div class="value">{{printf "%.2f" .IndexClose}} <small>{{pct .IndexChg}}</small></div><div>{{.MATrend}} · 赚钱效应 {{printf "%.1f%%" .ProfitEffect}}</div></div>{{end}}{{with .Intraday}}<div><span class="muted">盘中快照</span><div class="value">{{printf "%.1f%%" .CoveragePct}}</div><div>上涨 {{.RisingCount}} / 下跌 {{.FallingCount}} · {{if .Complete}}覆盖完整{{else}}仅供参考{{end}}</div></div>{{end}}</div>
 <h2>正式推荐买入</h2>{{if $.CanRecommend}}{{if .Recommendations}}<table><thead><tr><th>周期</th><th>股票</th><th>建议</th><th>置信度</th><th>建议仓位</th><th>理由</th></tr></thead><tbody>{{range .Recommendations}}<tr><td>{{.Horizon}}</td><td>{{.Code}} {{.Name}}</td><td>{{.Recommendation}}</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{printf "%.1f%%" .PositionPct}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}{{else}}<p>无（当前仓位策略为 {{.Position.Action}}，不强行推荐买入。）</p>{{end}}

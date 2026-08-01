@@ -25,13 +25,18 @@ func (s *Server) createBackup(ctx context.Context, update func(string)) (*Backup
 	if err := os.MkdirAll(s.backupDir, 0o700); err != nil {
 		return nil, err
 	}
+	if err := validateBackupLocation(s.config.Data.RawDir, s.backupDir); err != nil {
+		return nil, err
+	}
 	tempDir, err := os.MkdirTemp(s.backupDir, ".building-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(tempDir)
 	dbSnapshot := filepath.Join(tempDir, "web.db")
-	update("创建 SQLite 一致性快照")
+	if update != nil {
+		update("创建 SQLite 一致性快照")
+	}
 	if _, err := s.store.db.ExecContext(ctx, `VACUUM INTO ?`, dbSnapshot); err != nil {
 		return nil, fmt.Errorf("备份 SQLite: %w", err)
 	}
@@ -43,10 +48,12 @@ func (s *Server) createBackup(ctx context.Context, update func(string)) (*Backup
 	if err := os.WriteFile(portfolioSnapshot, portfolioYAML, 0o600); err != nil {
 		return nil, err
 	}
-	stamp := time.Now().In(time.Local).Format("20060102-150405")
+	stamp := time.Now().In(time.Local).Format("20060102-150405.000000000")
 	finalPath := filepath.Join(s.backupDir, "quant-backup-"+stamp+".tar.gz")
 	temporary := finalPath + ".tmp"
-	update("归档 SQLite、市场数据和持仓 YAML")
+	if update != nil {
+		update("归档 SQLite、市场数据和持仓 YAML")
+	}
 	files, err := writeBackupArchive(temporary, []backupSource{
 		{Path: dbSnapshot, ArchiveName: "web.db"},
 		{Path: portfolioSnapshot, ArchiveName: "portfolio.yaml"},
@@ -70,16 +77,62 @@ func (s *Server) createBackup(ctx context.Context, update func(string)) (*Backup
 	return &BackupReport{Path: finalPath, CreatedAt: time.Now().UTC(), Size: info.Size(), Files: files}, nil
 }
 
+// validateBackupLocation prevents the output archive from being discovered
+// while rawDir is being walked. Without this guard, placing backupDir inside
+// rawDir would make the archive read its own growing temporary file.
+func validateBackupLocation(rawDir, backupDir string) error {
+	raw, err := canonicalPath(rawDir)
+	if err != nil {
+		return fmt.Errorf("解析市场数据目录: %w", err)
+	}
+	backup, err := canonicalPath(backupDir)
+	if err != nil {
+		return fmt.Errorf("解析备份目录: %w", err)
+	}
+	if pathContains(raw, backup) || pathContains(backup, raw) {
+		return fmt.Errorf("backup.dir 与 data.raw_dir 不能相同或互相包含")
+	}
+	return nil
+}
+
+func canonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return abs, nil
+}
+
+func pathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
 type backupSource struct{ Path, ArchiveName string }
 
-func writeBackupArchive(path string, sources []backupSource) (int, error) {
+func writeBackupArchive(path string, sources []backupSource) (count int, returnErr error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
 	}
 	gz := gzip.NewWriter(file)
 	tw := tar.NewWriter(gz)
-	count := 0
+	defer func() {
+		for _, close := range []func() error{tw.Close, gz.Close, file.Close} {
+			if err := close(); returnErr == nil && err != nil {
+				returnErr = err
+			}
+		}
+	}()
 	for _, source := range sources {
 		err := filepath.WalkDir(source.Path, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -124,31 +177,32 @@ func writeBackupArchive(path string, sources []backupSource) (int, error) {
 			return nil
 		})
 		if err != nil {
-			tw.Close()
-			gz.Close()
-			file.Close()
 			return 0, err
 		}
-	}
-	if err := tw.Close(); err != nil {
-		return 0, err
-	}
-	if err := gz.Close(); err != nil {
-		return 0, err
-	}
-	if err := file.Close(); err != nil {
-		return 0, err
 	}
 	return count, nil
 }
 
-func latestBackup(pattern string) (os.FileInfo, error) {
-	paths, err := filepath.Glob(pattern)
-	if err != nil || len(paths) == 0 {
+func latestBackup(dir string) (os.FileInfo, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	sort.Strings(paths)
-	return os.Stat(paths[len(paths)-1])
+	var names []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() && strings.HasPrefix(name, "quant-backup-") && strings.HasSuffix(name, ".tar.gz") {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	sort.Strings(names)
+	return os.Stat(filepath.Join(dir, names[len(names)-1]))
 }
 
 func pruneBackups(dir string, retention int) error {

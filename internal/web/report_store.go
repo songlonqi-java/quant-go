@@ -109,7 +109,7 @@ func (s *taskStore) reports(ctx context.Context, filter ReportFilter) ([]ReportR
 		FROM web_reports r
 		JOIN web_tasks t ON t.id = r.task_id
 		LEFT JOIN portfolio_snapshots p ON p.id = r.portfolio_snapshot_id
-		WHERE 1 = 1`
+			WHERE r.kind IN ('daily', 'value_monthly', 'value_quarterly')`
 	var args []any
 	if filter.Kind != "" {
 		query += ` AND r.kind = ?`
@@ -154,7 +154,7 @@ func (s *taskStore) report(ctx context.Context, id int64) (*ReportRecord, error)
 		FROM web_reports r
 		JOIN web_tasks t ON t.id = r.task_id
 		LEFT JOIN portfolio_snapshots p ON p.id = r.portfolio_snapshot_id
-		WHERE r.id = ?`, id).Scan(&record.ID, &record.TaskID, &record.Kind, &record.TaskStatus,
+			WHERE r.id = ? AND r.kind IN ('daily', 'value_monthly', 'value_quarterly')`, id).Scan(&record.ID, &record.TaskID, &record.Kind, &record.TaskStatus,
 		&record.ReportVersion, &record.TargetDate, &record.TradeDate, &record.GeneratedAt,
 		&record.CodeVersion, &record.StrategyVersion, &record.DataVersion, &record.PortfolioSnapshotID,
 		&record.SnapshotTransactions, &record.CreatedAt, &reportJSON)
@@ -195,5 +195,14 @@ func validReportStatus(value string) TaskStatus {
 		return status
 	default:
 		return ""
+	}
+}
+
+func validReportKind(kind string) bool {
+	switch kind {
+	case taskKindDaily, taskKindValueMonthly, taskKindValueQuarterly:
+		return true
+	default:
+		return false
 	}
 }

@@ -9,14 +9,21 @@ import (
 	"quant/internal/sector"
 )
 
+const MinimumCoverage = 0.95
+
 type Readiness struct {
-	TradeDate       string
-	Stocks          int
-	DailyBasicCount int
-	FinancialCount  int
-	SectorReady     bool
-	Ready           bool
-	Issues          []string
+	TradeDate          string
+	Stocks             int
+	DailyBasicCount    int
+	FinancialCount     int
+	SectorCount        int
+	DailyBasicCoverage float64
+	FinancialCoverage  float64
+	SectorCoverage     float64
+	MinimumCoverage    float64
+	SectorReady        bool
+	Ready              bool
+	Issues             []string
 }
 
 // CheckReadiness verifies the slow-data inputs without running the screen or
@@ -42,9 +49,12 @@ func CheckReadiness(rawDir string) (*Readiness, error) {
 		}
 	}
 	result.Stocks = len(codes)
+	result.MinimumCoverage = MinimumCoverage
 	fetcher := data.NewFetcher(nil, rawDir, nil)
-	basic, _ := fetcher.LoadDailyBasicStore()
-	fina, _ := fetcher.LoadFinaStore()
+	basic, basicErr := fetcher.LoadDailyBasicStore()
+	fina, finaErr := fetcher.LoadFinaStore()
+	memberships, membershipErr := sector.LoadIndustryMemberships(rawDir)
+	report, sectorErr := sector.LoadReport(rawDir, result.TradeDate)
 	ordered := make([]string, 0, len(codes))
 	for code := range codes {
 		ordered = append(ordered, code)
@@ -59,18 +69,42 @@ func CheckReadiness(rawDir string) (*Readiness, error) {
 				result.FinancialCount++
 			}
 		}
+		if membershipErr == nil && report != nil {
+			if membership, ok := memberships.PrimaryIndustry(code, result.TradeDate); ok {
+				if _, ok := report.Find(membership.SectorType, membership.SectorCode); ok {
+					result.SectorCount++
+				}
+			}
+		}
 	}
-	report, _ := sector.LoadReport(rawDir, result.TradeDate)
-	result.SectorReady = report != nil && len(report.Sectors) > 0
-	if result.DailyBasicCount == 0 {
-		result.Issues = append(result.Issues, "缺少最新交易日 daily_basic 估值快照")
+	result.DailyBasicCoverage = coverage(result.DailyBasicCount, result.Stocks)
+	result.FinancialCoverage = coverage(result.FinancialCount, result.Stocks)
+	result.SectorCoverage = coverage(result.SectorCount, result.Stocks)
+	result.SectorReady = sectorErr == nil && membershipErr == nil && result.SectorCoverage >= MinimumCoverage
+	if basicErr != nil {
+		result.Issues = append(result.Issues, "加载 daily_basic 失败: "+basicErr.Error())
+	} else if result.DailyBasicCoverage < MinimumCoverage {
+		result.Issues = append(result.Issues, fmt.Sprintf("最新交易日 daily_basic 覆盖不足：%d/%d（要求至少 %.0f%%）", result.DailyBasicCount, result.Stocks, MinimumCoverage*100))
 	}
-	if result.FinancialCount == 0 {
-		result.Issues = append(result.Issues, "缺少可用于最新交易日的财务指标")
+	if finaErr != nil {
+		result.Issues = append(result.Issues, "加载财务指标失败: "+finaErr.Error())
+	} else if result.FinancialCoverage < MinimumCoverage {
+		result.Issues = append(result.Issues, fmt.Sprintf("财务指标覆盖不足：%d/%d（要求至少 %.0f%%）", result.FinancialCount, result.Stocks, MinimumCoverage*100))
 	}
-	if !result.SectorReady {
-		result.Issues = append(result.Issues, "缺少最新交易日行业估值快照")
+	if sectorErr != nil {
+		result.Issues = append(result.Issues, "加载行业估值快照失败: "+sectorErr.Error())
+	} else if membershipErr != nil {
+		result.Issues = append(result.Issues, "加载行业归属失败: "+membershipErr.Error())
+	} else if !result.SectorReady {
+		result.Issues = append(result.Issues, fmt.Sprintf("行业估值覆盖不足：%d/%d（要求至少 %.0f%%）", result.SectorCount, result.Stocks, MinimumCoverage*100))
 	}
 	result.Ready = len(result.Issues) == 0
 	return result, nil
+}
+
+func coverage(count, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(count) / float64(total)
 }

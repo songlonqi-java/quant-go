@@ -24,30 +24,46 @@ import (
 // from signalworkflow.Result, while preserving enough evidence for a person
 // (and a future AI analysis module) to inspect a completed run.
 type DailyReport struct {
-	Version          string                     `json:"version"`
-	GeneratedAt      time.Time                  `json:"generated_at"`
-	TargetDate       string                     `json:"target_date"`
-	TradeDate        string                     `json:"trade_date"`
-	Steps            []daily.Step               `json:"steps"`
-	StrategyNames    []string                   `json:"strategy_names"`
-	Market           *market.MarketStatus       `json:"market,omitempty"`
-	Intraday         *market.IntradayStatus     `json:"intraday,omitempty"`
-	News             *news.NewsSummary          `json:"news,omitempty"`
-	Position         signal.PositionDecision    `json:"position"`
-	Signals          []signal.SignalResult      `json:"signals"`
-	Recommendations  []signal.SignalResult      `json:"recommendations"`
-	Watchlist        []signal.SignalResult      `json:"watchlist"`
-	Holdings         []portfolio.PositionStatus `json:"holdings"`
-	Sectors          []data.SectorDaily         `json:"sectors"`
-	Warnings         []string                   `json:"warnings,omitempty"`
-	CodeVersion      string                     `json:"code_version,omitempty"`
-	StrategyVersion  string                     `json:"strategy_version,omitempty"`
-	DataVersion      string                     `json:"data_version,omitempty"`
-	SnapshotLedger   []portfolio.Transaction    `json:"-"`
-	ValueMonthly     *value.MonthlyReport       `json:"value_monthly,omitempty"`
-	ValueQuarterly   *value.QuarterlyReport     `json:"value_quarterly,omitempty"`
-	Backup           *BackupReport              `json:"backup,omitempty"`
-	ValuePreparation *valueprepare.Result       `json:"value_preparation,omitempty"`
+	Version         string                     `json:"version"`
+	GeneratedAt     time.Time                  `json:"generated_at"`
+	TargetDate      string                     `json:"target_date"`
+	TradeDate       string                     `json:"trade_date"`
+	Steps           []daily.Step               `json:"steps"`
+	StrategyNames   []string                   `json:"strategy_names"`
+	Market          *market.MarketStatus       `json:"market,omitempty"`
+	Intraday        *market.IntradayStatus     `json:"intraday,omitempty"`
+	News            *news.NewsSummary          `json:"news,omitempty"`
+	Position        signal.PositionDecision    `json:"position"`
+	Signals         []signal.SignalResult      `json:"signals"`
+	Recommendations []signal.SignalResult      `json:"recommendations"`
+	Watchlist       []signal.SignalResult      `json:"watchlist"`
+	Holdings        []portfolio.PositionStatus `json:"holdings"`
+	Sectors         []data.SectorDaily         `json:"sectors"`
+	Warnings        []string                   `json:"warnings,omitempty"`
+	CodeVersion     string                     `json:"code_version,omitempty"`
+	StrategyVersion string                     `json:"strategy_version,omitempty"`
+	DataVersion     string                     `json:"data_version,omitempty"`
+	SnapshotLedger  []portfolio.Transaction    `json:"-"`
+	ValueMonthly    *value.MonthlyReport       `json:"value_monthly,omitempty"`
+	ValueQuarterly  *value.QuarterlyReport     `json:"value_quarterly,omitempty"`
+}
+
+// TaskResult separates operational artifacts from analytical reports. Only
+// Analysis is indexed by the report center and receives a portfolio snapshot.
+type TaskResult struct {
+	ResultVersion    string               `json:"result_version"`
+	GeneratedAt      time.Time            `json:"generated_at"`
+	Analysis         *DailyReport         `json:"analysis,omitempty"`
+	Backup           *BackupReport        `json:"backup,omitempty"`
+	ValuePreparation *valueprepare.Result `json:"value_preparation,omitempty"`
+}
+
+func analysisTaskResult(report *DailyReport) *TaskResult {
+	generatedAt := time.Now().UTC()
+	if report != nil && !report.GeneratedAt.IsZero() {
+		generatedAt = report.GeneratedAt
+	}
+	return &TaskResult{ResultVersion: "task-result-v1", GeneratedAt: generatedAt, Analysis: report}
 }
 
 func reportFromValueMonthly(result *value.MonthlyReport) *DailyReport {

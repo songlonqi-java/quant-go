@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -78,11 +77,7 @@ func (s *taskScheduler) runDue(now time.Time) {
 		if !due || period == schedule.LastEnqueuedPeriod {
 			continue
 		}
-		_, enqueueErr := s.runner.enqueueKind(s.ctx, schedule.Kind, "schedule")
-		if enqueueErr != nil && !errors.Is(enqueueErr, ErrTaskAlreadyActive) {
-			continue
-		}
-		_ = s.store.markScheduleEnqueued(s.ctx, schedule.Kind, period)
+		_, _ = s.runner.enqueueScheduled(s.ctx, schedule.Kind, period)
 	}
 }
 

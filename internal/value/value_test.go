@@ -71,6 +71,33 @@ func TestMonthlyPersistsQualifiedCandidateAndQuarterlyRemovesDeterioration(t *te
 	}
 }
 
+func TestReadinessRequiresBroadCoverage(t *testing.T) {
+	rawDir := t.TempDir()
+	const tradeDate = "20260731"
+	if err := data.WriteParquetFile(filepath.Join(rawDir, "daily", "2026.parquet"), []data.DailyBar{
+		{TsCode: "000001.SZ", TradeDate: tradeDate}, {TsCode: "000002.SZ", TradeDate: tradeDate},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.WriteStocksParquet(filepath.Join(rawDir, "stocks.parquet"), []data.StockInfo{
+		{TsCode: "000001.SZ", Industry: "科技"}, {TsCode: "000002.SZ", Industry: "科技"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeValueParquet(t, filepath.Join(rawDir, "daily_basic", "2026.parquet"), []data.DailyBasic{{TsCode: "000001.SZ", TradeDate: tradeDate}})
+	writeValueParquet(t, filepath.Join(rawDir, "fina", "fina_indicator.parquet"), []data.FinaIndicator{{TsCode: "000001.SZ", AnnDate: tradeDate}})
+	if err := sector.WriteSectorDaily(rawDir, []data.SectorDaily{{TradeDate: tradeDate, SectorType: sector.TypeIndustry, SectorCode: "科技", SectorName: "科技"}}); err != nil {
+		t.Fatal(err)
+	}
+	readiness, err := CheckReadiness(rawDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readiness.Ready || readiness.DailyBasicCoverage != 0.5 || readiness.FinancialCoverage != 0.5 || readiness.SectorCoverage != 1 {
+		t.Fatalf("unexpected readiness: %+v", readiness)
+	}
+}
+
 func writeValueParquet[T any](t *testing.T, path string, rows []T) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

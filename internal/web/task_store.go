@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"quant/internal/workflow/valueprepare"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -43,6 +45,7 @@ type Task struct {
 	Message       string
 	Error         string
 	Report        *DailyReport
+	Result        *TaskResult
 	Events        []TaskEvent
 }
 
@@ -238,6 +241,15 @@ var schemaMigrations = []schemaMigration{
 		sql: `
 			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at) VALUES('value_prepare', 0, 16, 0, 1, '', CURRENT_TIMESTAMP);
 			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at) VALUES('backup', 0, 21, 0, 1, '', CURRENT_TIMESTAMP);
+		`,
+	},
+	{
+		version: 7,
+		name:    "ai answer usage",
+		sql: `
+			ALTER TABLE web_ai_answers ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0;
+			ALTER TABLE web_ai_answers ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0;
+			ALTER TABLE web_ai_answers ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0;
 		`,
 	},
 }
@@ -453,8 +465,20 @@ func (s *taskStore) updateProgress(ctx context.Context, taskID int64, message st
 }
 
 func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyReport, runErr error) error {
+	if report == nil {
+		return s.finishResult(ctx, taskID, nil, runErr)
+	}
+	return s.finishResult(ctx, taskID, analysisTaskResult(report), runErr)
+}
+
+func (s *taskStore) finishResult(ctx context.Context, taskID int64, taskResult *TaskResult, runErr error) error {
 	status := TaskSucceeded
-	message := "任务完成，报告已保存"
+	message := "任务完成"
+	if taskResult != nil && taskResult.Analysis != nil {
+		message = "任务完成，报告已保存"
+	} else if taskResult != nil {
+		message = "任务完成，结果已保存"
+	}
 	errText := ""
 	if runErr != nil {
 		status = TaskFailed
@@ -462,10 +486,10 @@ func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyRepor
 		errText = runErr.Error()
 	}
 	reportJSON := ""
-	if report != nil {
-		encoded, err := json.Marshal(report)
+	if taskResult != nil {
+		encoded, err := json.Marshal(taskResult)
 		if err != nil {
-			return fmt.Errorf("序列化日报: %w", err)
+			return fmt.Errorf("序列化任务结果: %w", err)
 		}
 		reportJSON = string(encoded)
 	}
@@ -480,8 +504,8 @@ func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyRepor
 		status, now, message, errText, reportJSON, taskID); err != nil {
 		return err
 	}
-	if report != nil {
-		if err := persistReport(ctx, tx, taskID, report, now); err != nil {
+	if taskResult != nil && taskResult.Analysis != nil {
+		if err := persistReport(ctx, tx, taskID, taskResult.Analysis, now); err != nil {
 			return err
 		}
 	}
@@ -580,13 +604,52 @@ func scanTask(scanner taskScanner) (*Task, error) {
 		return nil, err
 	}
 	if reportJSON != "" {
-		var report DailyReport
-		if err := json.Unmarshal([]byte(reportJSON), &report); err != nil {
+		result, err := decodeTaskResult([]byte(reportJSON))
+		if err != nil {
 			return nil, fmt.Errorf("解析任务报告: %w", err)
 		}
-		task.Report = &report
+		task.Result = result
+		task.Report = result.Analysis
 	}
 	return &task, nil
+}
+
+func decodeTaskResult(encoded []byte) (*TaskResult, error) {
+	var marker struct {
+		ResultVersion string `json:"result_version"`
+	}
+	if err := json.Unmarshal(encoded, &marker); err != nil {
+		return nil, err
+	}
+	if marker.ResultVersion != "" {
+		var result TaskResult
+		if err := json.Unmarshal(encoded, &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}
+	// Compatibility with task JSON written before operational results were
+	// split from DailyReport.
+	var legacy struct {
+		Backup           *BackupReport        `json:"backup"`
+		ValuePreparation *valueprepare.Result `json:"value_preparation"`
+	}
+	if err := json.Unmarshal(encoded, &legacy); err != nil {
+		return nil, err
+	}
+	result := &TaskResult{ResultVersion: "legacy-task-result"}
+	if legacy.Backup != nil || legacy.ValuePreparation != nil {
+		result.Backup = legacy.Backup
+		result.ValuePreparation = legacy.ValuePreparation
+		return result, nil
+	}
+	var report DailyReport
+	if err := json.Unmarshal(encoded, &report); err != nil {
+		return nil, err
+	}
+	result.GeneratedAt = report.GeneratedAt
+	result.Analysis = &report
+	return result, nil
 }
 
 func taskKindLabel(kind string) string {
