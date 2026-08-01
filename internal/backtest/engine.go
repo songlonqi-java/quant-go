@@ -9,22 +9,32 @@ import (
 )
 
 type Trade struct {
-	Code             string
-	Date             string
-	SignalDate       string
-	Action           string
-	Price            float64
-	Shares           float64
-	Cash             float64
-	Total            float64
-	Reason           string
-	StopPrice        float64
-	DelayDays        int
-	HoldingDays      int
-	ReturnPct        float64
-	HasReturn        bool
-	ImpactRate       float64
-	ParticipationPct float64
+	Code              string
+	Date              string
+	SignalDate        string
+	Action            string
+	RawPrice          float64
+	Price             float64
+	Shares            float64
+	Cash              float64
+	Total             float64
+	RawNotional       float64
+	ExecutionNotional float64
+	CommissionAmount  float64
+	SlippageAmount    float64
+	ImpactAmount      float64
+	TotalCostAmount   float64
+	Reason            string
+	StopPrice         float64
+	DelayDays         int
+	HoldingDays       int
+	GrossPnLAmount    float64
+	NetPnLAmount      float64
+	GrossReturnPct    float64
+	ReturnPct         float64
+	HasReturn         bool
+	ImpactRate        float64
+	ParticipationPct  float64
 }
 
 type EquityPoint struct {
@@ -106,6 +116,7 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) stra
 	var exitState *execution.ExitState
 	var sellOrder *pendingExit
 	entryCost := 0.0
+	rawEntryNotional := 0.0
 	result := &Result{ExitReasonCounts: make(map[string]int)}
 
 	for i := 0; i < len(bars); i++ {
@@ -115,30 +126,45 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) stra
 			prev := bars[i-1]
 			if sellOrder != nil && holding {
 				if canSellAtOpen(prev, bars[i], cfg.LimitPct) {
-					execPrice := execution.AdjustedExitPrice(bars[i].TradeOpen(), execution.CostModel{Commission: cfg.Commission, Slippage: cfg.Slippage}, sellOrder.impactRate)
 					soldShares := shares
-					proceeds := soldShares * execPrice
-					cost := proceeds * cfg.Commission
-					cash += proceeds - cost
+					fill, ok := execution.ExitExecutionBreakdown(bars[i].TradeOpen(), soldShares,
+						execution.CostModel{Commission: cfg.Commission, Slippage: cfg.Slippage}, sellOrder.impactRate)
+					if !ok {
+						skippedSignals++
+						continue
+					}
+					netProceeds := fill.ExecutionNotional - fill.CommissionAmount
+					cash += netProceeds
 					netReturn := 0.0
 					hasReturn := entryCost > 0
 					if hasReturn {
-						netReturn = ((proceeds-cost)/entryCost - 1) * 100
+						netReturn = (netProceeds/entryCost - 1) * 100
+					}
+					grossPnL := fill.RawNotional - rawEntryNotional
+					netPnL := netProceeds - entryCost
+					grossReturn := 0.0
+					if rawEntryNotional > 0 {
+						grossReturn = grossPnL / rawEntryNotional * 100
 					}
 					shares = 0
 					holding = false
 					tradeCount++
 					trades = append(trades, Trade{
 						Code: bars[i].TsCode, Date: bars[i].TradeDate, SignalDate: sellOrder.signalDate,
-						Action: "SELL", Price: execPrice, Shares: soldShares, Cash: cash, Total: cash,
+						Action: "SELL", RawPrice: fill.RawPrice, Price: fill.ExecutionPrice, Shares: soldShares, Cash: cash, Total: cash,
+						RawNotional: fill.RawNotional, ExecutionNotional: fill.ExecutionNotional,
+						CommissionAmount: fill.CommissionAmount, SlippageAmount: fill.SlippageAmount,
+						ImpactAmount: fill.ImpactAmount, TotalCostAmount: fill.TotalCostAmount,
 						Reason: string(sellOrder.reason), StopPrice: sellOrder.stopPrice, DelayDays: sellOrder.delayDays,
-						HoldingDays: sellOrder.holdingDays, ReturnPct: netReturn, HasReturn: hasReturn,
+						HoldingDays: sellOrder.holdingDays, GrossPnLAmount: grossPnL, NetPnLAmount: netPnL,
+						GrossReturnPct: grossReturn, ReturnPct: netReturn, HasReturn: hasReturn,
 						ImpactRate: sellOrder.impactRate, ParticipationPct: sellOrder.participationPct,
 					})
 					recordTradeImpact(result, sellOrder.impactRate, sellOrder.participationPct)
 					recordExitStats(result, sellOrder, netReturn, hasReturn, exitState)
 					exitState = nil
 					entryCost = 0
+					rawEntryNotional = 0
 					sellOrder = nil
 				} else {
 					skippedSignals++
@@ -148,31 +174,44 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) stra
 			switch pendingSignal {
 			case strategy.Buy:
 				if sellOrder == nil && !holding && canBuyAtOpen(prev, bars[i], cfg.LimitPct) {
-					execPrice := execution.AdjustedEntryPrice(bars[i].TradeOpen(), execution.CostModel{Commission: cfg.Commission, Slippage: cfg.Slippage}, pendingImpactRate)
 					available := cash
+					execPrice := execution.AdjustedEntryPrice(bars[i].TradeOpen(), execution.CostModel{Commission: cfg.Commission, Slippage: cfg.Slippage}, pendingImpactRate)
 					if available > 0 && execPrice > 0 {
 						buyShares := affordableLotShares(available, execPrice, cfg.Commission, cfg.LotSize)
 						if buyShares > 0 {
+							fill, ok := execution.EntryExecutionBreakdown(bars[i].TradeOpen(), buyShares,
+								execution.CostModel{Commission: cfg.Commission, Slippage: cfg.Slippage}, pendingImpactRate)
+							if !ok {
+								skippedSignals++
+								break
+							}
 							shares = buyShares
-							cost := shares * execPrice * cfg.Commission
-							cash = cash - shares*execPrice - cost
-							entryCost = shares*execPrice + cost
+							cash = cash - fill.ExecutionNotional - fill.CommissionAmount
+							entryCost = fill.ExecutionNotional + fill.CommissionAmount
+							rawEntryNotional = fill.RawNotional
 							holding = true
 							if cfg.ManagedExits {
 								exitState = execution.NewExitState(cfg.Horizon, bars[i].TradeDate, bars[i].TradeOpen())
 							}
 							tradeCount++
 							trades = append(trades, Trade{
-								Code:             bars[i].TsCode,
-								Date:             bars[i].TradeDate,
-								SignalDate:       pendingSignalDate,
-								Action:           "BUY",
-								Price:            execPrice,
-								Shares:           shares,
-								Cash:             cash,
-								Total:            cash + shares*closePrice,
-								ImpactRate:       pendingImpactRate,
-								ParticipationPct: pendingParticipationPct,
+								Code:              bars[i].TsCode,
+								Date:              bars[i].TradeDate,
+								SignalDate:        pendingSignalDate,
+								Action:            "BUY",
+								RawPrice:          fill.RawPrice,
+								Price:             fill.ExecutionPrice,
+								Shares:            shares,
+								Cash:              cash,
+								Total:             cash + shares*closePrice,
+								RawNotional:       fill.RawNotional,
+								ExecutionNotional: fill.ExecutionNotional,
+								CommissionAmount:  fill.CommissionAmount,
+								SlippageAmount:    fill.SlippageAmount,
+								ImpactAmount:      fill.ImpactAmount,
+								TotalCostAmount:   fill.TotalCostAmount,
+								ImpactRate:        pendingImpactRate,
+								ParticipationPct:  pendingParticipationPct,
 							})
 							recordTradeImpact(result, pendingImpactRate, pendingParticipationPct)
 						} else {

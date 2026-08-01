@@ -206,6 +206,59 @@ func AdjustedExitPrice(rawPrice float64, costs CostModel, impactRate float64) fl
 	return rawPrice * (1 - costs.Slippage) * (1 - impactRate)
 }
 
+// ExecutionBreakdown makes every adverse execution component auditable in
+// currency amounts. TotalCostAmount is measured against a fill at the raw
+// market open: entry costs add to cash paid and exit costs reduce cash
+// received.
+type ExecutionBreakdown struct {
+	RawPrice          float64
+	ExecutionPrice    float64
+	RawNotional       float64
+	ExecutionNotional float64
+	CommissionAmount  float64
+	SlippageAmount    float64
+	ImpactAmount      float64
+	TotalCostAmount   float64
+}
+
+func EntryExecutionBreakdown(rawPrice, shares float64, costs CostModel, impactRate float64) (ExecutionBreakdown, bool) {
+	if rawPrice <= 0 || shares <= 0 || costs.Validate() != nil || !finiteNonNegative(impactRate) || impactRate >= 1 {
+		return ExecutionBreakdown{}, false
+	}
+	slippedPrice := rawPrice * (1 + costs.Slippage)
+	executionPrice := slippedPrice * (1 + impactRate)
+	breakdown := ExecutionBreakdown{
+		RawPrice:          rawPrice,
+		ExecutionPrice:    executionPrice,
+		RawNotional:       rawPrice * shares,
+		ExecutionNotional: executionPrice * shares,
+		SlippageAmount:    (slippedPrice - rawPrice) * shares,
+		ImpactAmount:      (executionPrice - slippedPrice) * shares,
+	}
+	breakdown.CommissionAmount = breakdown.ExecutionNotional * costs.Commission
+	breakdown.TotalCostAmount = breakdown.CommissionAmount + breakdown.SlippageAmount + breakdown.ImpactAmount
+	return breakdown, true
+}
+
+func ExitExecutionBreakdown(rawPrice, shares float64, costs CostModel, impactRate float64) (ExecutionBreakdown, bool) {
+	if rawPrice <= 0 || shares <= 0 || costs.Validate() != nil || !finiteNonNegative(impactRate) || impactRate >= 1 {
+		return ExecutionBreakdown{}, false
+	}
+	slippedPrice := rawPrice * (1 - costs.Slippage)
+	executionPrice := slippedPrice * (1 - impactRate)
+	breakdown := ExecutionBreakdown{
+		RawPrice:          rawPrice,
+		ExecutionPrice:    executionPrice,
+		RawNotional:       rawPrice * shares,
+		ExecutionNotional: executionPrice * shares,
+		SlippageAmount:    (rawPrice - slippedPrice) * shares,
+		ImpactAmount:      (slippedPrice - executionPrice) * shares,
+	}
+	breakdown.CommissionAmount = breakdown.ExecutionNotional * costs.Commission
+	breakdown.TotalCostAmount = breakdown.CommissionAmount + breakdown.SlippageAmount + breakdown.ImpactAmount
+	return breakdown, true
+}
+
 func RoundTripReturnWithImpact(entry, exit float64, costs CostModel, entryImpactRate, exitImpactRate float64) (ReturnBreakdown, bool) {
 	entryPrice := AdjustedEntryPrice(entry, costs, entryImpactRate)
 	exitPrice := AdjustedExitPrice(exit, costs, exitImpactRate)

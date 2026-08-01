@@ -358,9 +358,7 @@ func backtestCmd() *cobra.Command {
 			reg := strategy.DefaultRegistry()
 
 			var selectedStrategies []strategy.Strategy
-			if len(strategyNames) == 0 {
-				strategyNames = cfg.Signal.DefaultStrategies
-			}
+			strategyNames = resolveBacktestStrategyNames(strategyNames, cfg.Signal.DefaultStrategies)
 			for _, name := range strategyNames {
 				s, ok := reg.Get(name)
 				if !ok {
@@ -468,18 +466,32 @@ func backtestCmd() *cobra.Command {
 					if err != nil {
 						return err
 					}
+					environmentStarted := time.Now()
+					fmt.Println("\n>>> 准备可复用的消融回测环境...")
+					environment, err := backtest.PreparePortfolioEnvironment(codeMap)
+					if err != nil {
+						return fmt.Errorf("准备消融回测环境: %w", err)
+					}
+					portfolioOptions.Environment = environment
+					portfolioOptions.CodeMap = nil
+					fmt.Printf(">>> 回测环境已准备，基线和实验组共用不可变行情/索引/市场状态（耗时 %s）\n",
+						time.Since(environmentStarted).Round(time.Millisecond))
 					portfolioOptions.Strategies = baselineStrategies
-					fmt.Printf("\n>>> 运行消融基线（%d 个策略）...\n", len(baselineStrategies))
+					baselineStarted := time.Now()
+					fmt.Printf(">>> 运行消融基线（%d 个策略）...\n", len(baselineStrategies))
 					baselineResult, err := backtest.RunPortfolio(portfolioOptions)
 					if err != nil {
 						return fmt.Errorf("运行消融基线: %w", err)
 					}
 					portfolioOptions.Strategies = variantStrategies
-					fmt.Printf(">>> 基线完成，运行加入 %s 的实验组（%d 个策略）...\n", ablation, len(variantStrategies))
+					fmt.Printf(">>> 基线完成（耗时 %s），运行加入 %s 的实验组（%d 个策略）...\n",
+						time.Since(baselineStarted).Round(time.Millisecond), ablation, len(variantStrategies))
+					variantStarted := time.Now()
 					variantResult, err := backtest.RunPortfolio(portfolioOptions)
 					if err != nil {
 						return fmt.Errorf("运行加入 %s 的组合: %w", ablation, err)
 					}
+					fmt.Printf(">>> 实验组完成（耗时 %s）\n", time.Since(variantStarted).Round(time.Millisecond))
 					comparison := backtest.CompareAblation(baselineResult, variantResult, capital, cfg.Backtest.RiskFreeRate, 252)
 					printAblationComparison(ablation, baselineNames, variantNames, comparison)
 					return nil
@@ -494,6 +506,7 @@ func backtestCmd() *cobra.Command {
 					candidateTopN, portfolioCfg.MaxTotalPositionPct, portfolioCfg.MaxSinglePositionPct, portfolioCfg.MaxSectorPositionPct)
 				metrics := backtest.CalculateMetrics(result, capital, cfg.Backtest.RiskFreeRate, 252)
 				metrics.Print()
+				printCostAttribution(backtest.CalculateCostAttribution(result, capital))
 				fmt.Printf("未成交/延迟成交次数: %d\n", result.SkippedSignals)
 				printExitSummary(result)
 				fmt.Println("说明: evidence.json 不会回灌历史日期，以免使用未来汇总证据；组合回测按当日信号资格规则逐日决策。")
@@ -640,6 +653,17 @@ func printExitSummary(result *backtest.Result) {
 	}
 }
 
+func printCostAttribution(attribution backtest.CostAttribution) {
+	fmt.Println("\n========== 交易成本归因 ==========")
+	fmt.Printf("成本前毛盈亏: %12.2f (%8.2f%%)\n", attribution.GrossPnLAmount, attribution.GrossReturnPct)
+	fmt.Printf("手续费:       %12.2f\n", attribution.CommissionAmount)
+	fmt.Printf("固定滑点:     %12.2f\n", attribution.SlippageAmount)
+	fmt.Printf("市场冲击:     %12.2f\n", attribution.ImpactAmount)
+	fmt.Printf("总交易成本:   %12.2f (%8.2f%%)\n", attribution.TotalCostAmount, attribution.CostDragPct)
+	fmt.Printf("净盈亏:       %12.2f (%8.2f%%)\n", attribution.NetPnLAmount, attribution.NetReturnPct)
+	fmt.Println("说明: 毛盈亏按实际成交路径加回成本，不是按无成本仓位重新回测。")
+}
+
 func withoutStrategy(names []string, target string) []string {
 	filtered := make([]string, 0, len(names))
 	for _, name := range names {
@@ -663,16 +687,26 @@ func withStrategy(names []string, target string) []string {
 func printAblationComparison(name string, baselineNames, variantNames []string, comparison backtest.AblationComparison) {
 	base := comparison.BaselineMetrics
 	variant := comparison.VariantMetrics
+	baseCosts := comparison.BaselineCosts
+	variantCosts := comparison.VariantCosts
 	fmt.Printf("\n========== 策略消融: %s ==========\n", name)
 	fmt.Printf("基线策略: %s\n", strings.Join(baselineNames, ", "))
 	fmt.Printf("实验策略: %s\n", strings.Join(variantNames, ", "))
 	fmt.Println("指标                 基线          加入因子       差值")
 	fmt.Printf("总净收益           %9.2f%%    %9.2f%%    %+9.2f%%\n", base.TotalReturn, variant.TotalReturn, variant.TotalReturn-base.TotalReturn)
+	fmt.Printf("成本前毛收益       %9.2f%%    %9.2f%%    %+9.2f%%\n", baseCosts.GrossReturnPct, variantCosts.GrossReturnPct, variantCosts.GrossReturnPct-baseCosts.GrossReturnPct)
+	fmt.Printf("交易成本拖累       %9.2f%%    %9.2f%%    %+9.2f%%\n", baseCosts.CostDragPct, variantCosts.CostDragPct, variantCosts.CostDragPct-baseCosts.CostDragPct)
 	fmt.Printf("年化收益           %9.2f%%    %9.2f%%    %+9.2f%%\n", base.AnnualizedReturn, variant.AnnualizedReturn, variant.AnnualizedReturn-base.AnnualizedReturn)
 	fmt.Printf("最大回撤           %9.2f%%    %9.2f%%    %+9.2f%%\n", base.MaxDrawdown, variant.MaxDrawdown, variant.MaxDrawdown-base.MaxDrawdown)
 	fmt.Printf("夏普比率           %9.2f     %9.2f     %+9.2f\n", base.SharpeRatio, variant.SharpeRatio, variant.SharpeRatio-base.SharpeRatio)
 	fmt.Printf("半边换手率         %9.2f%%    %9.2f%%    %+9.2f%%\n", comparison.BaselineTurnover, comparison.VariantTurnover, comparison.VariantTurnover-comparison.BaselineTurnover)
 	fmt.Printf("成交记录           %9d     %9d     %+9d\n", base.TotalTrades, variant.TotalTrades, variant.TotalTrades-base.TotalTrades)
+	fmt.Printf("已平仓胜率         %9.2f%%    %9.2f%%    %+9.2f%%\n", base.WinRate, variant.WinRate, variant.WinRate-base.WinRate)
+	fmt.Printf("盈亏比             %9.2f     %9.2f     %+9.2f\n", base.ProfitFactor, variant.ProfitFactor, variant.ProfitFactor-base.ProfitFactor)
+	fmt.Printf("平均盈利/亏损      %6.2f%%/%6.2f%%  %6.2f%%/%6.2f%%\n", base.AvgWin, base.AvgLoss, variant.AvgWin, variant.AvgLoss)
+	fmt.Printf("成本金额(手/滑/冲) %7.0f/%7.0f/%7.0f  %7.0f/%7.0f/%7.0f\n",
+		baseCosts.CommissionAmount, baseCosts.SlippageAmount, baseCosts.ImpactAmount,
+		variantCosts.CommissionAmount, variantCosts.SlippageAmount, variantCosts.ImpactAmount)
 
 	baselinePeriods := make(map[string]backtest.PeriodPerformance, len(comparison.BaselinePeriods))
 	for _, period := range comparison.BaselinePeriods {
@@ -690,6 +724,11 @@ func printAblationComparison(name string, baselineNames, variantNames []string, 
 	}
 	fmt.Printf("跨年稳定性: %d/%d 个可比年份收益改善。只有收益、回撤和换手同时可接受，才建议进入默认策略。\n",
 		comparison.PositivePeriods, comparison.ComparablePeriods)
+	if comparison.Admission.Passed {
+		fmt.Println("准入门禁: 通过；仍需重建历史证据并继续前向观察。")
+	} else {
+		fmt.Printf("准入门禁: 不通过（%s）\n", strings.Join(comparison.Admission.Reasons, "；"))
+	}
 }
 
 func formatCountMap(counts map[string]int) string {
@@ -1093,6 +1132,16 @@ func registeredStrategies(names []string) ([]strategy.Strategy, error) {
 		selected = append(selected, s)
 	}
 	return selected, nil
+}
+
+func resolveBacktestStrategyNames(requested, configured []string) []string {
+	if len(requested) > 0 {
+		return append([]string(nil), requested...)
+	}
+	// Match the default end-of-day workflow. Slow/value and experimental
+	// strategies remain available when explicitly requested, but an old local
+	// config must not silently put them back into the default trading baseline.
+	return strategy.DailyStrategyNames(configured)
 }
 
 func analyzeCmd() *cobra.Command {

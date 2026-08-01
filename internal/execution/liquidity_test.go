@@ -24,6 +24,34 @@ func TestAssessLiquidityAppliesListingAmountTurnoverAndParticipation(t *testing.
 	}
 }
 
+func TestExecutionBreakdownSeparatesEntryAndExitCosts(t *testing.T) {
+	costs := CostModel{Commission: 0.001, Slippage: 0.002}
+	entry, ok := EntryExecutionBreakdown(10, 100, costs, 0.01)
+	if !ok {
+		t.Fatal("entry breakdown rejected valid fill")
+	}
+	exit, ok := ExitExecutionBreakdown(10, 100, costs, 0.01)
+	if !ok {
+		t.Fatal("exit breakdown rejected valid fill")
+	}
+	assertClose := func(name string, got, want float64) {
+		t.Helper()
+		if math.Abs(got-want) > 1e-9 {
+			t.Fatalf("%s = %.12f, want %.12f", name, got, want)
+		}
+	}
+	assertClose("entry price", entry.ExecutionPrice, 10.1202)
+	assertClose("entry slippage", entry.SlippageAmount, 2)
+	assertClose("entry impact", entry.ImpactAmount, 10.02)
+	assertClose("entry commission", entry.CommissionAmount, 1.01202)
+	assertClose("entry total", entry.TotalCostAmount, 13.03202)
+	assertClose("exit price", exit.ExecutionPrice, 9.8802)
+	assertClose("exit slippage", exit.SlippageAmount, 2)
+	assertClose("exit impact", exit.ImpactAmount, 9.98)
+	assertClose("exit commission", exit.CommissionAmount, 0.98802)
+	assertClose("exit total", exit.TotalCostAmount, 12.96802)
+}
+
 func TestAssessLiquidityMakesMissingTurnoverAuditableWithoutBlockingByDefault(t *testing.T) {
 	bars := liquidityBars(20, 100_000)
 	assessment := AssessLiquidity(LiquidityInput{

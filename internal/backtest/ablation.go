@@ -1,6 +1,7 @@
 package backtest
 
 import (
+	"fmt"
 	"sort"
 )
 
@@ -17,18 +18,28 @@ type PeriodPerformance struct {
 type AblationComparison struct {
 	BaselineMetrics   PerformanceMetrics
 	VariantMetrics    PerformanceMetrics
+	BaselineCosts     CostAttribution
+	VariantCosts      CostAttribution
 	BaselineTurnover  float64
 	VariantTurnover   float64
 	BaselinePeriods   []PeriodPerformance
 	VariantPeriods    []PeriodPerformance
 	ComparablePeriods int
 	PositivePeriods   int
+	Admission         AblationAdmission
+}
+
+type AblationAdmission struct {
+	Passed  bool
+	Reasons []string
 }
 
 func CompareAblation(baseline, variant *Result, initialCapital, riskFreeRate float64, tradingDays int) AblationComparison {
 	comparison := AblationComparison{
 		BaselineMetrics:  CalculateMetrics(baseline, initialCapital, riskFreeRate, tradingDays),
 		VariantMetrics:   CalculateMetrics(variant, initialCapital, riskFreeRate, tradingDays),
+		BaselineCosts:    CalculateCostAttribution(baseline, initialCapital),
+		VariantCosts:     CalculateCostAttribution(variant, initialCapital),
 		BaselineTurnover: portfolioTurnoverPct(baseline, initialCapital),
 		VariantTurnover:  portfolioTurnoverPct(variant, initialCapital),
 		BaselinePeriods:  performanceByYear(baseline, initialCapital),
@@ -48,7 +59,41 @@ func CompareAblation(baseline, variant *Result, initialCapital, riskFreeRate flo
 			comparison.PositivePeriods++
 		}
 	}
+	comparison.Admission = assessAblationAdmission(comparison)
 	return comparison
+}
+
+// assessAblationAdmission is deliberately conservative: an experimental
+// strategy cannot enter the default portfolio merely by losing slightly less.
+// The resulting portfolio must be profitable, improve the baseline, remain
+// stable across time, and avoid worsening drawdown or turnover materially.
+func assessAblationAdmission(comparison AblationComparison) AblationAdmission {
+	base := comparison.BaselineMetrics
+	variant := comparison.VariantMetrics
+	reasons := make([]string, 0)
+	if variant.AnnualizedReturn <= 0 {
+		reasons = append(reasons, fmt.Sprintf("实验组年化收益 %.2f%% 不为正", variant.AnnualizedReturn))
+	}
+	if variant.AnnualizedReturn <= base.AnnualizedReturn {
+		reasons = append(reasons, "实验组年化收益未改善")
+	}
+	if variant.MaxDrawdown > base.MaxDrawdown {
+		reasons = append(reasons, fmt.Sprintf("最大回撤由 %.2f%% 恶化到 %.2f%%", base.MaxDrawdown, variant.MaxDrawdown))
+	}
+	turnoverLimit := comparison.BaselineTurnover * 1.05
+	if comparison.BaselineTurnover == 0 {
+		turnoverLimit = 0
+	}
+	if comparison.VariantTurnover > turnoverLimit {
+		reasons = append(reasons, fmt.Sprintf("半边换手率 %.2f%% 超过基线 5%% 容忍上限", comparison.VariantTurnover))
+	}
+	if comparison.ComparablePeriods < 3 {
+		reasons = append(reasons, fmt.Sprintf("只有 %d 个可比年份，少于 3 年", comparison.ComparablePeriods))
+	} else if comparison.PositivePeriods*3 < comparison.ComparablePeriods*2 {
+		reasons = append(reasons, fmt.Sprintf("只有 %d/%d 个年份收益改善，低于 2/3",
+			comparison.PositivePeriods, comparison.ComparablePeriods))
+	}
+	return AblationAdmission{Passed: len(reasons) == 0, Reasons: reasons}
 }
 
 func performanceByYear(result *Result, initialCapital float64) []PeriodPerformance {

@@ -7,7 +7,6 @@ import (
 
 	"quant/internal/data"
 	"quant/internal/execution"
-	"quant/internal/market"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 )
@@ -16,6 +15,7 @@ import (
 // risk budget used by the live signal workflow against one shared cash account.
 type PortfolioOptions struct {
 	CodeMap      map[string][]data.DailyBar
+	Environment  *PortfolioEnvironment
 	StockNames   map[string]string
 	Strategies   []strategy.Strategy
 	Moneyflows   *data.MoneyflowStore
@@ -45,19 +45,17 @@ type pendingOrder struct {
 }
 
 type managedPosition struct {
-	shares       float64
-	averageEntry float64
-	entryCost    float64
-	exitState    *execution.ExitState
+	shares           float64
+	averageEntry     float64
+	entryCost        float64
+	rawEntryNotional float64
+	exitState        *execution.ExitState
 }
 
 // RunPortfolio performs a chronological, next-open replay. Buy orders expire
 // after the next market session; sell orders remain pending through suspension
 // or limit-down sessions so exit liquidity risk is represented.
 func RunPortfolio(opts PortfolioOptions) (*Result, error) {
-	if len(opts.CodeMap) == 0 {
-		return nil, fmt.Errorf("组合回测缺少行情数据")
-	}
 	if len(opts.Strategies) == 0 {
 		return nil, fmt.Errorf("组合回测缺少策略")
 	}
@@ -83,13 +81,24 @@ func RunPortfolio(opts PortfolioOptions) (*Result, error) {
 		opts.MaxSectorPct = 25
 	}
 
-	codeMap, indexes, dates := preparePortfolioData(opts.CodeMap)
-	dates = portfolioDateRange(dates, opts.StartDate, opts.EndDate)
+	environment := opts.Environment
+	if environment == nil {
+		var err error
+		environment, err = PreparePortfolioEnvironment(opts.CodeMap)
+		if err != nil {
+			return nil, err
+		}
+	} else if !environment.valid() {
+		return nil, fmt.Errorf("组合回测环境无效")
+	}
+	codeMap := environment.codeMap
+	indexes := environment.indexes
+	dates := portfolioDateRange(environment.dates, opts.StartDate, opts.EndDate)
 	if len(dates) == 0 {
 		return &Result{FinalEquity: opts.Config.InitialCapital}, nil
 	}
 	preparePortfolioStrategies(opts.Strategies, codeMap, opts.Fundamentals)
-	statuses := market.BuildHistoricalStatus(codeMap)
+	statuses := environment.statuses
 	evaluator := signal.NewHistoricalEvaluator(opts.Strategies)
 
 	cash := opts.Config.InitialCapital
@@ -117,23 +126,41 @@ func RunPortfolio(opts PortfolioOptions) (*Result, error) {
 				continue
 			}
 			bar := codeMap[code][idx]
-			execPrice := execution.AdjustedExitPrice(bar.TradeOpen(), execution.CostModel{Commission: opts.Config.Commission, Slippage: opts.Config.Slippage}, order.impactRate)
-			proceeds := shares * execPrice
-			cash += proceeds - proceeds*opts.Config.Commission
+			fill, ok := execution.ExitExecutionBreakdown(bar.TradeOpen(), shares,
+				execution.CostModel{Commission: opts.Config.Commission, Slippage: opts.Config.Slippage}, order.impactRate)
+			if !ok {
+				return nil, fmt.Errorf("%s %s 卖出成交成本无法计算", code, date)
+			}
+			netProceeds := fill.ExecutionNotional - fill.CommissionAmount
+			cash += netProceeds
 			delete(holdings, code)
 			position := positions[code]
 			netReturn := 0.0
 			hasReturn := position != nil && position.entryCost > 0
 			if hasReturn {
-				netReturn = ((proceeds-proceeds*opts.Config.Commission)/position.entryCost - 1) * 100
+				netReturn = (netProceeds/position.entryCost - 1) * 100
+			}
+			grossPnL := 0.0
+			netPnL := 0.0
+			grossReturn := 0.0
+			if position != nil {
+				grossPnL = fill.RawNotional - position.rawEntryNotional
+				netPnL = netProceeds - position.entryCost
+				if position.rawEntryNotional > 0 {
+					grossReturn = grossPnL / position.rawEntryNotional * 100
+				}
 			}
 			delete(pendingSells, code)
 			delete(positions, code)
 			result.TradeCount++
 			result.Trades = append(result.Trades, Trade{
 				Code: code, Date: date, SignalDate: order.signalDate, Action: "SELL",
-				Price: execPrice, Shares: shares, Cash: cash,
+				RawPrice: fill.RawPrice, Price: fill.ExecutionPrice, Shares: shares, Cash: cash,
+				RawNotional: fill.RawNotional, ExecutionNotional: fill.ExecutionNotional,
+				CommissionAmount: fill.CommissionAmount, SlippageAmount: fill.SlippageAmount,
+				ImpactAmount: fill.ImpactAmount, TotalCostAmount: fill.TotalCostAmount,
 				Reason: string(order.reason), StopPrice: order.stopPrice, DelayDays: order.delayDays, HoldingDays: order.holdingDays,
+				GrossPnLAmount: grossPnL, NetPnLAmount: netPnL, GrossReturnPct: grossReturn,
 				ReturnPct: netReturn, HasReturn: hasReturn, ImpactRate: order.impactRate, ParticipationPct: order.participationPct,
 			})
 			recordTradeImpact(result, order.impactRate, order.participationPct)
@@ -164,14 +191,18 @@ func RunPortfolio(opts PortfolioOptions) (*Result, error) {
 				result.SkippedSignals++
 				continue
 			}
-			cost := shares * execPrice
-			entryCost := cost + cost*opts.Config.Commission
+			fill, ok := execution.EntryExecutionBreakdown(bar.TradeOpen(), shares,
+				execution.CostModel{Commission: opts.Config.Commission, Slippage: opts.Config.Slippage}, order.impactRate)
+			if !ok {
+				return nil, fmt.Errorf("%s %s 买入成交成本无法计算", code, date)
+			}
+			entryCost := fill.ExecutionNotional + fill.CommissionAmount
 			cash -= entryCost
 			holdings[code] += shares
 			position := positions[code]
 			if position == nil {
 				position = &managedPosition{
-					shares: shares, averageEntry: bar.TradeOpen(), entryCost: entryCost,
+					shares: shares, averageEntry: bar.TradeOpen(), entryCost: entryCost, rawEntryNotional: fill.RawNotional,
 					exitState: execution.NewExitState(order.horizon, date, bar.TradeOpen()),
 				}
 				positions[code] = position
@@ -180,17 +211,23 @@ func RunPortfolio(opts PortfolioOptions) (*Result, error) {
 				position.averageEntry = (position.averageEntry*position.shares + bar.TradeOpen()*shares) / totalShares
 				position.shares = totalShares
 				position.entryCost += entryCost
+				position.rawEntryNotional += fill.RawNotional
 				position.exitState.MergeEntry(order.horizon, position.averageEntry)
 			}
 			result.TradeCount++
 			result.Trades = append(result.Trades, Trade{
 				Code: code, Date: date, SignalDate: order.signalDate, Action: "BUY",
-				Price: execPrice, Shares: shares, Cash: cash, ImpactRate: order.impactRate, ParticipationPct: order.participationPct,
+				RawPrice: fill.RawPrice, Price: fill.ExecutionPrice, Shares: shares, Cash: cash,
+				RawNotional: fill.RawNotional, ExecutionNotional: fill.ExecutionNotional,
+				CommissionAmount: fill.CommissionAmount, SlippageAmount: fill.SlippageAmount,
+				ImpactAmount: fill.ImpactAmount, TotalCostAmount: fill.TotalCostAmount,
+				ImpactRate: order.impactRate, ParticipationPct: order.participationPct,
 			})
 			recordTradeImpact(result, order.impactRate, order.participationPct)
 		}
 
-		for code, dateIndexes := range indexes {
+		for _, code := range environment.codes {
+			dateIndexes := indexes[code]
 			if idx, ok := dateIndexes[date]; ok {
 				if closePrice := codeMap[code][idx].TradeClose(); closePrice > 0 {
 					lastClose[code] = closePrice
@@ -202,7 +239,7 @@ func RunPortfolio(opts PortfolioOptions) (*Result, error) {
 
 		// Stops are confirmed using information known at the close and become
 		// persistent sell orders for the next market open.
-		for _, code := range sortedPortfolioCodes(codeMap) {
+		for _, code := range environment.codes {
 			position := positions[code]
 			if position == nil || position.exitState == nil || holdings[code] <= 0 {
 				continue
@@ -229,7 +266,7 @@ func RunPortfolio(opts PortfolioOptions) (*Result, error) {
 		}
 
 		allSignals := make([]signal.SignalResult, 0)
-		for _, code := range sortedPortfolioCodes(codeMap) {
+		for _, code := range environment.codes {
 			idx, ok := indexes[code][date]
 			if !ok {
 				continue
@@ -396,7 +433,8 @@ func portfolioBudgetAtClose(holdings map[string]float64, prices map[string]float
 
 func portfolioEquity(cash float64, holdings map[string]float64, codeMap map[string][]data.DailyBar, indexes map[string]map[string]int, date string, lastClose map[string]float64, useOpen bool) float64 {
 	total := cash
-	for code, shares := range holdings {
+	for _, code := range sortedOrderCodes(holdings) {
+		shares := holdings[code]
 		price := lastClose[code]
 		if idx, ok := indexes[code][date]; ok {
 			bar := codeMap[code][idx]
@@ -414,15 +452,6 @@ func portfolioEquity(cash float64, holdings map[string]float64, codeMap map[stri
 func sortedOrderCodes[T any](orders map[string]T) []string {
 	codes := make([]string, 0, len(orders))
 	for code := range orders {
-		codes = append(codes, code)
-	}
-	sort.Strings(codes)
-	return codes
-}
-
-func sortedPortfolioCodes(codeMap map[string][]data.DailyBar) []string {
-	codes := make([]string, 0, len(codeMap))
-	for code := range codeMap {
 		codes = append(codes, code)
 	}
 	sort.Strings(codes)
