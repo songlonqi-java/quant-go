@@ -15,6 +15,22 @@ type Config struct {
 	Backtest   BacktestConfig   `yaml:"backtest"`
 	Signal     SignalConfig     `yaml:"signal"`
 	Validation ValidationConfig `yaml:"validation"`
+	AI         AIConfig         `yaml:"ai"`
+	Backup     BackupConfig     `yaml:"backup"`
+}
+
+type AIConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	BaseURL    string `yaml:"base_url"`
+	APIKey     string `yaml:"api_key"`
+	APIKeyEnv  string `yaml:"api_key_env"`
+	Model      string `yaml:"model"`
+	TimeoutSec int    `yaml:"timeout_sec"`
+}
+
+type BackupConfig struct {
+	Dir       string `yaml:"dir"`
+	Retention int    `yaml:"retention"`
 }
 
 type TushareConfig struct {
@@ -104,6 +120,13 @@ var defaultConfig = Config{
 		MinExpectedReturn: 0,
 		PriorSamples:      20,
 	},
+	AI: AIConfig{
+		BaseURL:    "https://api.deepseek.com",
+		APIKeyEnv:  "QUANT_AI_API_KEY",
+		Model:      "deepseek-chat",
+		TimeoutSec: 60,
+	},
+	Backup: BackupConfig{Retention: 14},
 }
 
 func Load(configPath string) (*Config, error) {
@@ -163,6 +186,19 @@ func applyEnvOverrides(cfg *Config) error {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.Backtest.RiskFreeRate = f
 		}
+	}
+	if v := os.Getenv("QUANT_AI_BASE_URL"); v != "" {
+		cfg.AI.BaseURL = v
+	}
+	if v := os.Getenv("QUANT_AI_MODEL"); v != "" {
+		cfg.AI.Model = v
+	}
+	keyEnv := cfg.AI.APIKeyEnv
+	if keyEnv == "" {
+		keyEnv = "QUANT_AI_API_KEY"
+	}
+	if v := os.Getenv(keyEnv); v != "" {
+		cfg.AI.APIKey = v
 	}
 	return nil
 }

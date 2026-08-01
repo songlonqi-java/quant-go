@@ -17,6 +17,8 @@ const (
 	taskKindDaily          = "daily"
 	taskKindValueMonthly   = "value_monthly"
 	taskKindValueQuarterly = "value_quarterly"
+	taskKindBackup         = "backup"
+	taskKindValuePrepare   = "value_prepare"
 )
 
 type TaskStatus string
@@ -46,7 +48,7 @@ type Task struct {
 
 func validTaskKind(kind string) bool {
 	switch kind {
-	case taskKindDaily, taskKindValueMonthly, taskKindValueQuarterly:
+	case taskKindDaily, taskKindValueMonthly, taskKindValueQuarterly, taskKindBackup, taskKindValuePrepare:
 		return true
 	default:
 		return false
@@ -210,6 +212,32 @@ var schemaMigrations = []schemaMigration{
 				VALUES('value_monthly', 0, 18, 0, 1, '', CURRENT_TIMESTAMP);
 			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at)
 				VALUES('value_quarterly', 0, 19, 0, 1, '1,4,7,10', CURRENT_TIMESTAMP);
+			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at)
+				VALUES('backup', 0, 21, 0, 1, '', CURRENT_TIMESTAMP);
+		`,
+	},
+	{
+		version: 5,
+		name:    "ai report answers",
+		sql: `
+			CREATE TABLE IF NOT EXISTS web_ai_answers (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				report_id INTEGER NOT NULL,
+				question TEXT NOT NULL,
+				answer TEXT NOT NULL,
+				model TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY(report_id) REFERENCES web_reports(id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_web_ai_answers_report ON web_ai_answers(report_id, id DESC);
+		`,
+	},
+	{
+		version: 6,
+		name:    "maintenance schedules",
+		sql: `
+			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at) VALUES('value_prepare', 0, 16, 0, 1, '', CURRENT_TIMESTAMP);
+			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at) VALUES('backup', 0, 21, 0, 1, '', CURRENT_TIMESTAMP);
 		`,
 	},
 }
@@ -569,6 +597,10 @@ func taskKindLabel(kind string) string {
 		return "月度价值筛选"
 	case taskKindValueQuarterly:
 		return "季度价值复核"
+	case taskKindBackup:
+		return "本地备份"
+	case taskKindValuePrepare:
+		return "慢频数据准备"
 	default:
 		return kind
 	}

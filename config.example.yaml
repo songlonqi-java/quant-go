@@ -53,3 +53,15 @@ validation:
   min_positive_folds: 2
   min_expected_return_pct: 0
   prior_samples: 20
+
+ai:
+  enabled: false
+  base_url: "https://api.deepseek.com"
+  api_key: ""                 # 推荐留空，使用 QUANT_AI_API_KEY
+  api_key_env: "QUANT_AI_API_KEY"
+  model: "deepseek-chat"
+  timeout_sec: 60
+
+backup:
+  dir: ""                     # 默认 data.meta_dir/backups
+  retention: 14

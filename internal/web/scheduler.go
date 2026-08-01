@@ -91,9 +91,9 @@ func schedulePeriod(schedule Schedule, now time.Time) (string, bool) {
 		return "", false
 	}
 	switch schedule.Kind {
-	case taskKindDaily:
+	case taskKindDaily, taskKindBackup:
 		return now.Format("20060102"), true
-	case taskKindValueMonthly:
+	case taskKindValueMonthly, taskKindValuePrepare:
 		if now.Day() < schedule.DayOfMonth {
 			return "", false
 		}

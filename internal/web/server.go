@@ -20,25 +20,37 @@ import (
 	"strings"
 	"time"
 
+	quantai "quant/internal/ai"
 	"quant/internal/config"
 	"quant/internal/portfolio"
 	"quant/internal/value"
 	"quant/internal/workflow/daily"
+	"quant/internal/workflow/valueprepare"
 )
 
 type Options struct {
 	Config        *config.Config
 	DatabasePath  string
 	PortfolioPath string
+	AIClient      AICompleter
+}
+
+type AICompleter interface {
+	Complete(context.Context, string, string) (string, error)
+	Model() string
 }
 
 type Server struct {
-	store         *taskStore
-	runner        *taskRunner
-	scheduler     *taskScheduler
-	mux           *http.ServeMux
-	portfolioPath string
-	csrfToken     string
+	store           *taskStore
+	runner          *taskRunner
+	scheduler       *taskScheduler
+	mux             *http.ServeMux
+	portfolioPath   string
+	csrfToken       string
+	ai              AICompleter
+	config          *config.Config
+	backupDir       string
+	backupRetention int
 }
 
 func New(opts Options) (*Server, error) {
@@ -71,9 +83,28 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 		store.close()
 		return nil, fmt.Errorf("生成表单安全令牌: %w", err)
 	}
-	server := &Server{store: store, portfolioPath: opts.PortfolioPath, csrfToken: csrfToken}
+	backupDir := opts.Config.Backup.Dir
+	if backupDir == "" {
+		backupDir = filepath.Join(opts.Config.Data.MetaDir, "backups")
+	}
+	server := &Server{
+		store: store, portfolioPath: opts.PortfolioPath, csrfToken: csrfToken, ai: opts.AIClient,
+		config: opts.Config, backupDir: backupDir, backupRetention: opts.Config.Backup.Retention,
+	}
+	if server.ai == nil && opts.Config.AI.Enabled {
+		timeout := time.Duration(opts.Config.AI.TimeoutSec) * time.Second
+		client, err := quantai.New(quantai.Config{
+			BaseURL: opts.Config.AI.BaseURL, APIKey: opts.Config.AI.APIKey,
+			Model: opts.Config.AI.Model, Timeout: timeout,
+		})
+		if err != nil {
+			store.close()
+			return nil, fmt.Errorf("配置 AI 客户端: %w", err)
+		}
+		server.ai = client
+	}
 	if execute == nil {
-		execute = defaultExecutor(opts, store)
+		execute = defaultExecutor(opts, server)
 	}
 	server.runner = newTaskRunner(store, execute)
 	server.mux = http.NewServeMux()
@@ -81,6 +112,8 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 	server.mux.HandleFunc("POST /tasks/daily", server.handleCreateDaily)
 	server.mux.HandleFunc("POST /tasks/value-monthly", server.handleCreateValueMonthly)
 	server.mux.HandleFunc("POST /tasks/value-quarterly", server.handleCreateValueQuarterly)
+	server.mux.HandleFunc("POST /tasks/backup", server.handleCreateBackup)
+	server.mux.HandleFunc("POST /tasks/value-prepare", server.handleCreateValuePrepare)
 	server.mux.HandleFunc("POST /portfolio/import-yaml", server.handlePortfolioImport)
 	server.mux.HandleFunc("GET /portfolio/export-yaml", server.handlePortfolioExport)
 	server.mux.HandleFunc("GET /portfolio", server.handlePortfolio)
@@ -89,8 +122,10 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 	server.mux.HandleFunc("POST /portfolio/transactions/{id}/void", server.handlePortfolioVoid)
 	server.mux.HandleFunc("GET /reports", server.handleReports)
 	server.mux.HandleFunc("GET /reports/{id}", server.handleReport)
+	server.mux.HandleFunc("POST /reports/{id}/ask", server.handleReportAsk)
 	server.mux.HandleFunc("GET /schedules", server.handleSchedules)
 	server.mux.HandleFunc("POST /schedules/{kind}", server.handleScheduleUpdate)
+	server.mux.HandleFunc("GET /monitoring", server.handleMonitoring)
 	server.mux.HandleFunc("GET /tasks/", server.handleTask)
 	server.mux.HandleFunc("GET /", server.handleHome)
 	server.runner.start()
@@ -99,9 +134,9 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 	return server, nil
 }
 
-func defaultExecutor(opts Options, store *taskStore) taskExecutor {
+func defaultExecutor(opts Options, server *Server) taskExecutor {
 	return func(ctx context.Context, kind string, update func(string)) (*DailyReport, error) {
-		ledger, err := store.portfolioLedger(ctx)
+		ledger, err := server.store.portfolioLedger(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("加载 SQLite 交易流水: %w", err)
 		}
@@ -120,6 +155,10 @@ func defaultExecutor(opts Options, store *taskStore) taskExecutor {
 			err = runErr
 			report = reportFromDaily(result)
 		case taskKindValueMonthly:
+			readiness, readyErr := value.CheckReadiness(opts.Config.Data.RawDir)
+			if readyErr != nil || !readiness.Ready {
+				return nil, fmt.Errorf("慢频数据未就绪，请先运行慢频数据准备任务")
+			}
 			update("运行月度价值筛选：读取本地估值、财务和行业快照")
 			result, runErr := value.Monthly(value.MonthlyOptions{
 				RawDir: opts.Config.Data.RawDir, TopN: 20, MinMarketCap: opts.Config.Fetch.MinMarketCap,
@@ -131,6 +170,14 @@ func defaultExecutor(opts Options, store *taskStore) taskExecutor {
 			result, runErr := value.Quarterly(value.QuarterlyOptions{RawDir: opts.Config.Data.RawDir})
 			err = runErr
 			report = reportFromValueQuarterly(result)
+		case taskKindBackup:
+			result, runErr := server.createBackup(ctx, update)
+			err = runErr
+			report = &DailyReport{Version: "backup-report-v1", GeneratedAt: time.Now().UTC(), CodeVersion: currentCodeVersion(), Backup: result}
+		case taskKindValuePrepare:
+			result, runErr := valueprepare.Run(ctx, opts.Config, update)
+			err = runErr
+			report = &DailyReport{Version: "value-preparation-report-v1", GeneratedAt: time.Now().UTC(), CodeVersion: currentCodeVersion(), ValuePreparation: result}
 		default:
 			return nil, fmt.Errorf("不支持的任务类型: %s", kind)
 		}
@@ -331,11 +378,73 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "读取报告持仓快照失败", http.StatusInternalServerError)
 		return
 	}
-	data := reportPageData{Record: report}
+	data := reportPageData{Record: report, CSRFToken: s.csrfToken}
 	if snapshot != nil {
 		data.Snapshot = snapshot.Transactions
 	}
+	data.AIEnabled = s.ai != nil
+	data.AIError = r.URL.Query().Get("ai_error")
+	data.Answers, err = s.store.aiAnswers(r.Context(), report.ID)
+	if err != nil {
+		http.Error(w, "读取 AI 问答失败", http.StatusInternalServerError)
+		return
+	}
 	renderPage(w, reportCenterDetailTemplate, data)
+}
+
+func (s *Server) handleReportAsk(w http.ResponseWriter, r *http.Request) {
+	if !s.validCSRF(r) {
+		http.Error(w, "表单已过期，请刷新页面后重试", http.StatusForbidden)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	if s.ai == nil {
+		redirectAIError(w, r, id, fmt.Errorf("AI 尚未启用或配置不完整"))
+		return
+	}
+	question, err := validateAIQuestion(r.FormValue("question"))
+	if err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	record, err := s.store.report(r.Context(), id)
+	if err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	contextJSON, err := compactReportContext(record)
+	if err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	system := "你是本地量化报告解释助手。严格区分报告原始数据、你的推断和数据不足；不得声称执行交易，不得覆盖空仓或观望约束。"
+	prompt := "以下是用户主动选择的结构化报告摘要：\n" + contextJSON + "\n\n用户问题：" + question
+	answer, err := s.ai.Complete(r.Context(), system, prompt)
+	if err != nil {
+		redirectAIError(w, r, id, s.safeAIError(err))
+		return
+	}
+	if err := s.store.saveAIAnswer(r.Context(), id, question, answer, s.ai.Model()); err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/reports/%d", id), http.StatusSeeOther)
+}
+
+func (s *Server) safeAIError(err error) error {
+	message := err.Error()
+	if s.config != nil && s.config.AI.APIKey != "" {
+		message = strings.ReplaceAll(message, s.config.AI.APIKey, "[redacted]")
+	}
+	return errors.New(message)
+}
+
+func redirectAIError(w http.ResponseWriter, r *http.Request, reportID int64, err error) {
+	http.Redirect(w, r, fmt.Sprintf("/reports/%d?ai_error=%s", reportID, url.QueryEscape(err.Error())), http.StatusSeeOther)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -436,6 +545,18 @@ func (s *Server) handleCreateValueQuarterly(w http.ResponseWriter, r *http.Reque
 	s.handleCreateTask(w, r, taskKindValueQuarterly)
 }
 
+func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
+	s.handleCreateTask(w, r, taskKindBackup)
+}
+
+func (s *Server) handleCreateValuePrepare(w http.ResponseWriter, r *http.Request) {
+	s.handleCreateTask(w, r, taskKindValuePrepare)
+}
+
+func (s *Server) handleMonitoring(w http.ResponseWriter, r *http.Request) {
+	renderPage(w, monitoringTemplate, monitoringPageData{Status: s.monitoringStatus(r.Context())})
+}
+
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request, kind string) {
 	if !s.validCSRF(r) {
 		http.Error(w, "表单已过期，请刷新页面后重试", http.StatusForbidden)
@@ -533,9 +654,13 @@ type reportsPageData struct {
 }
 
 type reportPageData struct {
-	Record   *ReportRecord
-	Snapshot []portfolio.Transaction
-	Refresh  bool
+	Record    *ReportRecord
+	Snapshot  []portfolio.Transaction
+	Answers   []AIAnswer
+	AIEnabled bool
+	AIError   string
+	CSRFToken string
+	Refresh   bool
 }
 
 type schedulesPageData struct {
@@ -544,6 +669,11 @@ type schedulesPageData struct {
 	Status    string
 	Error     string
 	Refresh   bool
+}
+
+type monitoringPageData struct {
+	Status  MonitoringStatus
+	Refresh bool
 }
 
 func portfolioHoldingViews(ledger *portfolio.Ledger, report *DailyReport) []portfolioHoldingView {
@@ -617,13 +747,14 @@ const pageTemplate = `{{define "page"}}<!doctype html>
 {{if .Refresh}}<meta http-equiv="refresh" content="2">{{end}}
 <title>go-quant 本地控制台</title><style>
 :root{color:#1f2937;background:#f7f8fa;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{max-width:1080px;margin:0 auto;padding:28px 18px 48px}a{color:#155e75;text-decoration:none}header{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid #d7dce1;margin-bottom:22px}nav a{margin-left:14px}h1{font-size:24px;margin:0 0 12px}h2{font-size:18px;margin:26px 0 10px}.card{background:#fff;border:1px solid #dde2e7;border-radius:8px;padding:16px;margin:12px 0}.muted{color:#64748b}.error{color:#b42318}.success{color:#18794e}.running{color:#a16207}button{background:#155e75;color:#fff;border:0;border-radius:6px;padding:9px 13px;cursor:pointer}button:disabled{background:#94a3b8;cursor:not-allowed}.danger{background:#b42318}input,select{border:1px solid #cbd5e1;border-radius:5px;padding:7px;box-sizing:border-box}.trade-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;align-items:end}.trade-form label{display:flex;flex-direction:column;gap:4px;font-size:13px}.inline-form{display:flex;gap:6px;align-items:center}.inline-form input[type=text]{min-width:120px;width:100%}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;border-bottom:1px solid #e5e7eb;padding:8px 6px;vertical-align:top}th{color:#475569;font-weight:600}.table-wrap{overflow-x:auto}.tag{display:inline-block;border-radius:999px;padding:2px 7px;background:#e0f2fe;color:#075985;font-size:12px}.warn{background:#fff7ed;color:#9a3412;padding:10px;border-radius:6px;margin:8px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.value{font-size:22px;font-weight:650;margin-top:4px}.events{padding-left:18px}.events li{margin:6px 0}@media(max-width:620px){body{padding:18px 12px}header{display:block}nav{margin-bottom:10px}nav a{margin:0 14px 0 0}table{font-size:12px}th,td{padding:6px 3px}}</style></head>
-<body><header><h1><a href="/">go-quant 本地控制台</a></h1><nav><a href="/">任务</a><a href="/reports">报告</a><a href="/portfolio">持仓</a><a href="/schedules">定时</a></nav></header>{{template "body" .}}</body></html>{{end}}`
+<body><header><h1><a href="/">go-quant 本地控制台</a></h1><nav><a href="/">任务</a><a href="/reports">报告</a><a href="/portfolio">持仓</a><a href="/schedules">定时</a><a href="/monitoring">监控</a></nav></header>{{template "body" .}}</body></html>{{end}}`
 
 const homeTemplate = `{{define "body"}}
 <section class="card"><h2>日常日终任务</h2><p class="muted">依次刷新日线、涨跌停价、资金流、指数与板块快照，然后生成结构化日报。数据写入任务始终串行执行。</p>
 {{if eq .Error "active"}}<p class="error">同类型任务正在运行或排队，请先等待完成。</p>{{end}}
 <form method="post" action="/tasks/daily"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}">{{if .HasActive}}<button disabled>日终任务运行中</button>{{else}}<button type="submit">运行日常日终任务</button>{{end}}</form></section>
-<section class="card"><h2>慢频价值任务</h2><p class="muted">独立读取本地估值、财务和行业快照，不运行日常信号或盘中行情。运行前请确保慢频数据已准备完成。</p><form method="post" action="/tasks/value-monthly" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">运行月度价值筛选</button></form><form method="post" action="/tasks/value-quarterly" style="display:inline-block"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">运行季度价值复核</button></form></section>
+<section class="card"><h2>慢频价值任务</h2><p class="muted">独立读取本地估值、财务和行业快照，不运行日常信号或盘中行情。</p><form method="post" action="/tasks/value-prepare" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">准备慢频数据</button></form><form method="post" action="/tasks/value-monthly" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">运行月度价值筛选</button></form><form method="post" action="/tasks/value-quarterly" style="display:inline-block"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">运行季度价值复核</button></form></section>
+<section class="card"><h2>本地备份</h2><p class="muted">通过单 worker 归档 SQLite 一致性快照、市场数据和持仓 YAML。</p><form method="post" action="/tasks/backup"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">立即创建备份</button></form></section>
 <section class="card"><h2>交易流水</h2><p>SQLite 当前保存 {{.PortfolioCount}} 笔有效交易，是 Web 日报的持仓数据来源。</p>
 {{if eq .PortfolioStatus "imported"}}<p class="success">YAML 交易流水已成功导入。</p>{{end}}
 {{if eq .PortfolioStatus "already-imported"}}<p class="muted">该 YAML 文件已经导入，无需重复操作。</p>{{end}}
@@ -631,7 +762,7 @@ const homeTemplate = `{{define "body"}}
 <form method="post" action="/portfolio/import-yaml" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">从 portfolio.yaml 导入</button></form><a href="/portfolio/export-yaml">导出 YAML</a>
 <p class="muted">导入只允许在 SQLite 流水为空时执行，且同一文件不会重复导入。</p></section>
 <section class="card"><h2>最近任务</h2>{{if .Tasks}}<table><thead><tr><th>编号</th><th>类型</th><th>来源</th><th>状态</th><th>创建时间</th><th>进度 / 结果</th></tr></thead><tbody>{{range .Tasks}}<tr><td><a href="/tasks/{{.ID}}">#{{.ID}}</a></td><td>{{kindLabel .Kind}}</td><td>{{.TriggerSource}}</td><td><span class="tag">{{.Status}}</span></td><td>{{shortTime .CreatedAt}}</td><td>{{.Message}}{{if .Error}}<div class="error">{{.Error}}</div>{{end}}</td></tr>{{end}}</tbody></table>{{else}}<p class="muted">还没有任务。首次点击上方按钮即可运行。</p>{{end}}</section>
-<section class="card"><h2>当前范围</h2><p class="muted">当前仅允许本机访问，已支持三类任务、报告、持仓流水与本地定时。AI 问答及公网访问仍未开放。</p></section>{{end}}`
+<section class="card"><h2>当前范围</h2><p class="muted">当前仅允许本机访问，已支持任务、报告、持仓流水、本地定时、监控、备份和可选的报告 AI 问答。HTTPS 与主机部署留待后期。</p></section>{{end}}`
 
 const portfolioTemplate = `{{define "body"}}
 <h1>持仓与交易流水</h1>
@@ -657,9 +788,12 @@ const reportsTemplate = `{{define "body"}}<h1>报告中心</h1>
 
 const reportCenterDetailTemplate = `{{define "body"}}<p><a href="/reports">← 返回报告中心</a></p><section class="card"><h1>报告 #{{.Record.ID}}</h1><div class="grid"><div><span class="muted">任务</span><div><a href="/tasks/{{.Record.TaskID}}">#{{.Record.TaskID}}</a> · {{.Record.TaskStatus}}</div></div><div><span class="muted">交易日 / 数据版本</span><div>{{.Record.TradeDate}} / {{.Record.DataVersion}}</div></div><div><span class="muted">报告 / 代码版本</span><div>{{.Record.ReportVersion}} / {{.Record.CodeVersion}}</div></div><div><span class="muted">策略版本</span><div>{{.Record.StrategyVersion}}</div></div><div><span class="muted">持仓快照</span><div>{{.Record.SnapshotTransactions}} 笔交易</div></div></div></section>
 {{with .Record.Report}}<section class="card"><h2>分析摘要</h2>{{with .ValueMonthly}}<p>扫描 {{.Scanned}} 只，符合规则 {{.Qualified}} 只，报告展示 {{len .Candidates}} 只；规则 {{.Policy.Version}}。</p>{{else}}{{with .ValueQuarterly}}<p>复核 {{len .Items}} 个价值候选；规则 {{.Policy.Version}}，来源快照 {{.SourceSnapshot}}。</p>{{else}}<p>仓位策略：<strong>{{.Position.Action}}</strong>　{{.Position.Advice}}</p><p>正式信号 {{len .Signals}} 条，正式买入 {{len .Recommendations}} 条，观察机会 {{len .Watchlist}} 条。</p>{{end}}{{end}}{{if .Warnings}}{{range .Warnings}}<div class="warn">{{.}}</div>{{end}}{{end}}</section>{{end}}
-<section class="card"><h2>执行时持仓流水快照</h2>{{if .Snapshot}}<div class="table-wrap"><table><thead><tr><th>日期</th><th>股票</th><th>方向</th><th>股数</th><th>价格</th><th>备注</th></tr></thead><tbody>{{range .Snapshot}}<tr><td>{{.Date}}</td><td>{{.Code}}</td><td>{{.Action}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.3f" .Price}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">旧报告没有持仓流水快照。</p>{{end}}</section>{{end}}`
+<section class="card"><h2>执行时持仓流水快照</h2>{{if .Snapshot}}<div class="table-wrap"><table><thead><tr><th>日期</th><th>股票</th><th>方向</th><th>股数</th><th>价格</th><th>备注</th></tr></thead><tbody>{{range .Snapshot}}<tr><td>{{.Date}}</td><td>{{.Code}}</td><td>{{.Action}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.3f" .Price}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">旧报告没有持仓流水快照。</p>{{end}}</section>
+<section class="card"><h2>AI 报告问答</h2>{{if .AIError}}<div class="warn">{{.AIError}}</div>{{end}}{{if .AIEnabled}}<form method="post" action="/reports/{{.Record.ID}}/ask"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>只基于当前报告提问</label><textarea name="question" maxlength="1000" rows="4" style="width:100%;box-sizing:border-box;margin:8px 0" required></textarea><button type="submit">提交问题</button></form>{{else}}<p class="muted">AI 未启用。请配置 ai.enabled、base_url、model 和 API Key 后重启服务。</p>{{end}}{{range .Answers}}<div class="card"><p><strong>问：</strong>{{.Question}}</p><p style="white-space:pre-wrap"><strong>答：</strong>{{.Answer}}</p><p class="muted">{{.Model}} · {{shortTime .CreatedAt}}</p></div>{{end}}</section>{{end}}`
 
 const schedulesTemplate = `{{define "body"}}<h1>本地定时任务</h1>{{if eq .Status "saved"}}<p class="success">定时设置已保存。</p>{{end}}{{if .Error}}<div class="warn">保存失败：{{.Error}}</div>{{end}}<section class="card"><p>定时器只在本地 A 股交易日创建任务，实际执行仍经过单 worker。服务关闭期间不会执行；重启后若当天/当月已到设置时间且尚未入队，会补充入队一次。</p><p class="muted">交易日来自本地 trade_cal.parquet；本地交易日历不包含当天时不会自动入队。价值任务读取已经准备好的慢频数据，不自动调用盘中行情。</p></section>{{range .Schedules}}<section class="card"><h2>{{kindLabel .Kind}}</h2><form class="trade-form" method="post" action="/schedules/{{.Kind}}"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><label>启用<select name="enabled"><option value="0" {{if not .Enabled}}selected{{end}}>关闭</option><option value="1" {{if .Enabled}}selected{{end}}>启用</option></select></label><label>小时<input type="number" name="hour" min="0" max="23" value="{{.Hour}}" required></label><label>分钟<input type="number" name="minute" min="0" max="59" value="{{.Minute}}" required></label><label>起始日（1-28）<input type="number" name="day_of_month" min="1" max="28" value="{{.DayOfMonth}}" required></label>{{if eq .Kind "value_quarterly"}}<label>执行月份<input name="months" value="{{.Months}}" required></label>{{else}}<input type="hidden" name="months" value="">{{end}}<button type="submit">保存</button></form><p class="muted">时区 {{.Timezone}} · 上次入队周期 {{if .LastEnqueuedPeriod}}{{.LastEnqueuedPeriod}}{{else}}无{{end}}</p></section>{{end}}{{end}}`
+
+const monitoringTemplate = `{{define "body"}}<h1>运行监控</h1><div class="grid"><section class="card"><span class="muted">交易日历</span><div class="value">{{if .Status.CalendarReady}}{{.Status.CalendarLatest}}{{else}}缺失{{end}}</div></section><section class="card"><span class="muted">磁盘可用</span><div class="value">{{printf "%.1f GB" .Status.DiskFreeGB}}</div></section><section class="card"><span class="muted">近 7 日失败任务</span><div class="value">{{.Status.RecentFailed}}</div></section><section class="card"><span class="muted">最近备份</span><div>{{if .Status.LatestBackup}}{{.Status.LatestBackup}} · {{.Status.LatestBackupSize}} bytes{{else}}无{{end}}</div></section></div><section class="card"><h2>慢频价值数据</h2>{{if .Status.ValueError}}<div class="warn">{{.Status.ValueError}}</div>{{else}}{{with .Status.ValueReadiness}}<p>数据日期 {{.TradeDate}}，股票 {{.Stocks}}，估值覆盖 {{.DailyBasicCount}}，财务覆盖 {{.FinancialCount}}，行业快照 {{if .SectorReady}}就绪{{else}}缺失{{end}}。</p>{{range .Issues}}<div class="warn">{{.}}</div>{{end}}{{if .Ready}}<p class="success">慢频价值输入已就绪。</p>{{end}}{{end}}{{end}}</section>{{end}}`
 
 const taskTemplate = `{{define "body"}}
 <p><a href="/">← 返回任务列表</a></p><section class="card"><h2>{{kindLabel .Task.Kind}} #{{.Task.ID}}</h2><p>状态：<span class="tag">{{.Task.Status}}</span>　来源：{{.Task.TriggerSource}}　创建：{{shortTime .Task.CreatedAt}}　开始：{{shortTime .Task.StartedAt}}　结束：{{shortTime .Task.FinishedAt}}</p><p>{{.Task.Message}}</p>{{if .Task.Error}}<p class="error">失败原因：{{.Task.Error}}</p>{{end}}{{if .Refresh}}<p class="running">任务执行中，页面每 2 秒自动刷新。</p>{{end}}</section>
