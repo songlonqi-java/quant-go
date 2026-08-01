@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,125 @@ func TestTaskStoreLifecycleRejectsConcurrentDailyTask(t *testing.T) {
 	}
 	if len(stored.Events) < 4 {
 		t.Fatalf("events = %+v, want lifecycle events", stored.Events)
+	}
+}
+
+func TestTaskStoreConcurrentCreateIsAtomic(t *testing.T) {
+	store, err := openTaskStore(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+
+	const attempts = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := store.createDaily(context.Background())
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	created := 0
+	rejected := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			created++
+		case errors.Is(err, ErrTaskAlreadyActive):
+			rejected++
+		default:
+			t.Fatalf("unexpected create error: %v", err)
+		}
+	}
+	if created != 1 || rejected != attempts-1 {
+		t.Fatalf("created=%d rejected=%d, want 1/%d", created, rejected, attempts-1)
+	}
+}
+
+func TestTaskStoreMigrationAndInterruptedRecovery(t *testing.T) {
+	store, err := openTaskStore(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+
+	var migrations int
+	if err := store.db.QueryRow(`SELECT COUNT(1) FROM schema_migrations`).Scan(&migrations); err != nil {
+		t.Fatal(err)
+	}
+	if migrations != len(schemaMigrations) {
+		t.Fatalf("migrations=%d, want %d", migrations, len(schemaMigrations))
+	}
+
+	task, err := store.createDaily(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.claimNext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.recoverInterrupted(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered=%d, want 1", recovered)
+	}
+	stored, err := store.task(context.Background(), task.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != TaskFailed || stored.FinishedAt == "" || !strings.Contains(stored.Error, "服务重启") {
+		t.Fatalf("recovered task=%+v", stored)
+	}
+	if len(stored.Events) == 0 || !strings.Contains(stored.Events[len(stored.Events)-1].Message, "已中断") {
+		t.Fatalf("events=%+v", stored.Events)
+	}
+	if _, err := store.createDaily(context.Background()); err != nil {
+		t.Fatalf("create after recovery: %v", err)
+	}
+}
+
+func TestTaskRunnerConvertsPanicToFailedTask(t *testing.T) {
+	store, err := openTaskStore(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newTaskRunner(store, func(context.Context, func(string)) (*DailyReport, error) {
+		panic("boom")
+	})
+	runner.start()
+	defer func() {
+		runner.stop()
+		store.close()
+	}()
+
+	task, err := runner.enqueue(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stored, err := store.task(context.Background(), task.ID, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status == TaskFailed {
+			if !strings.Contains(stored.Error, "任务执行异常: boom") {
+				t.Fatalf("task error=%q", stored.Error)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task did not fail: %+v", stored)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

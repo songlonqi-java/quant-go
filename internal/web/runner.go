@@ -2,7 +2,9 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 )
 
 type taskExecutor func(context.Context, func(string)) (*DailyReport, error)
@@ -70,15 +72,25 @@ func (r *taskRunner) loop() {
 			for {
 				task, err := r.store.claimNext(r.ctx)
 				if err != nil {
-					return
+					if !waitForRetry(r.ctx, time.Second) {
+						return
+					}
+					continue
 				}
 				if task == nil {
 					break
 				}
-				report, runErr := r.execute(r.ctx, func(message string) {
-					_ = r.store.updateProgress(r.ctx, task.ID, message)
+				report, runErr := r.runSafely(func(message string) {
+					for r.ctx.Err() == nil {
+						if err := r.store.updateProgress(r.ctx, task.ID, message); err == nil {
+							return
+						}
+						if !waitForRetry(r.ctx, time.Second) {
+							return
+						}
+					}
 				})
-				if err := r.store.finish(context.Background(), task.ID, report, runErr); err != nil {
+				if !r.persistFinish(task.ID, report, runErr) {
 					return
 				}
 				if r.ctx.Err() != nil {
@@ -86,5 +98,42 @@ func (r *taskRunner) loop() {
 				}
 			}
 		}
+	}
+}
+
+func (r *taskRunner) persistFinish(taskID int64, report *DailyReport, runErr error) bool {
+	ctx := r.ctx
+	cancel := func() {}
+	if r.ctx.Err() != nil {
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	}
+	defer cancel()
+	for {
+		if err := r.store.finish(ctx, taskID, report, runErr); err == nil {
+			return true
+		}
+		if !waitForRetry(ctx, time.Second) {
+			return false
+		}
+	}
+}
+
+func (r *taskRunner) runSafely(update func(string)) (report *DailyReport, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("任务执行异常: %v", recovered)
+		}
+	}()
+	return r.execute(r.ctx, update)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }

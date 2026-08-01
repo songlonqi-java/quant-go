@@ -51,6 +51,10 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开任务数据库: %w", err)
 	}
+	if _, err := store.recoverInterrupted(context.Background()); err != nil {
+		store.close()
+		return nil, fmt.Errorf("恢复中断任务: %w", err)
+	}
 	server := &Server{store: store}
 	server.runner = newTaskRunner(store, execute)
 	server.mux = http.NewServeMux()
@@ -73,10 +77,7 @@ func defaultExecutor(opts Options) taskExecutor {
 				update(fmt.Sprintf("%s：%s", step.Name, step.Detail))
 			},
 		})
-		if err != nil {
-			return nil, err
-		}
-		return reportFromDaily(result), nil
+		return reportFromDaily(result), err
 	}
 }
 

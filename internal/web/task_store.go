@@ -50,6 +50,41 @@ type taskStore struct {
 	db *sql.DB
 }
 
+type schemaMigration struct {
+	version int
+	name    string
+	sql     string
+}
+
+var schemaMigrations = []schemaMigration{
+	{
+		version: 1,
+		name:    "initial task tables",
+		sql: `
+			CREATE TABLE IF NOT EXISTS web_tasks (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				kind TEXT NOT NULL,
+				status TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				started_at TEXT NOT NULL DEFAULT '',
+				finished_at TEXT NOT NULL DEFAULT '',
+				message TEXT NOT NULL DEFAULT '',
+				error TEXT NOT NULL DEFAULT '',
+				report_json TEXT NOT NULL DEFAULT ''
+			);
+			CREATE INDEX IF NOT EXISTS idx_web_tasks_status_created ON web_tasks(status, created_at DESC);
+			CREATE TABLE IF NOT EXISTS web_task_events (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				task_id INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				message TEXT NOT NULL,
+				FOREIGN KEY(task_id) REFERENCES web_tasks(id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_web_task_events_task_id ON web_task_events(task_id, id);
+		`,
+	},
+}
+
 func openTaskStore(path string) (*taskStore, error) {
 	if path == "" {
 		return nil, fmt.Errorf("任务数据库路径不能为空")
@@ -64,6 +99,10 @@ func openTaskStore(path string) (*taskStore, error) {
 	// A single connection matches the single-worker execution policy and also
 	// avoids lock contention when progress messages are stored during a run.
 	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("配置任务数据库: %w", err)
+	}
 	store := &taskStore{db: db}
 	if err := store.migrate(context.Background()); err != nil {
 		db.Close()
@@ -73,59 +112,132 @@ func openTaskStore(path string) (*taskStore, error) {
 }
 
 func (s *taskStore) migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS web_tasks (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			kind TEXT NOT NULL,
-			status TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			started_at TEXT NOT NULL DEFAULT '',
-			finished_at TEXT NOT NULL DEFAULT '',
-			message TEXT NOT NULL DEFAULT '',
-			error TEXT NOT NULL DEFAULT '',
-			report_json TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_web_tasks_status_created ON web_tasks(status, created_at DESC);
-		CREATE TABLE IF NOT EXISTS web_task_events (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			task_id INTEGER NOT NULL,
-			created_at TEXT NOT NULL,
-			message TEXT NOT NULL,
-			FOREIGN KEY(task_id) REFERENCES web_tasks(id)
-		);
-		CREATE INDEX IF NOT EXISTS idx_web_task_events_task_id ON web_task_events(task_id, id);
-	`)
-	return err
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TEXT NOT NULL
+		)`); err != nil {
+		return err
+	}
+	for _, migration := range schemaMigrations {
+		var applied int
+		err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, migration.version).Scan(&applied)
+		if err != nil {
+			return err
+		}
+		if applied > 0 {
+			continue
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, migration.sql); err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, name, applied_at) VALUES(?, ?, ?)`,
+				migration.version, migration.name, timestamp())
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("执行数据库迁移 %d (%s): %w", migration.version, migration.name, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("提交数据库迁移 %d (%s): %w", migration.version, migration.name, err)
+		}
+	}
+	return nil
 }
 
 func (s *taskStore) createDaily(ctx context.Context) (*Task, error) {
-	var active int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM web_tasks WHERE status IN (?, ?)`, TaskQueued, TaskRunning).Scan(&active); err != nil {
-		return nil, err
-	}
-	if active > 0 {
-		return nil, ErrTaskAlreadyActive
-	}
-	now := timestamp()
-	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO web_tasks(kind, status, created_at, message) VALUES(?, ?, ?, ?)`,
-		taskKindDaily, TaskQueued, now, "任务已进入队列")
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
+	}
+	defer tx.Rollback()
+	now := timestamp()
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO web_tasks(kind, status, created_at, message)
+		SELECT ?, ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM web_tasks WHERE kind = ? AND status IN (?, ?)
+		)`, taskKindDaily, TaskQueued, now, "任务已进入队列", taskKindDaily, TaskQueued, TaskRunning)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed == 0 {
+		return nil, ErrTaskAlreadyActive
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
 		return nil, err
 	}
-	if err := s.addEvent(ctx, id, now, "已创建日终任务"); err != nil {
+	if err := addEvent(ctx, tx, id, now, "已创建日终任务"); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.task(ctx, id, false)
 }
 
+// recoverInterrupted marks tasks left running by an unclean shutdown as
+// failed. Queued tasks are intentionally preserved and will be claimed by the
+// new worker after startup.
+func (s *taskStore) recoverInterrupted(ctx context.Context) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM web_tasks WHERE status = ? ORDER BY id`, TaskRunning)
+	if err != nil {
+		return 0, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	now := timestamp()
+	const message = "服务重启，任务已中断"
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE web_tasks SET status = ?, finished_at = ?, message = ?, error = ?
+			WHERE id = ? AND status = ?`, TaskFailed, now, message, message, id, TaskRunning); err != nil {
+			return 0, err
+		}
+		if err := addEvent(ctx, tx, id, now, message); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(len(ids)), nil
+}
+
 func (s *taskStore) claimNext(ctx context.Context) (*Task, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	var id int64
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM web_tasks WHERE status = ? ORDER BY id LIMIT 1`, TaskQueued).Scan(&id)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM web_tasks WHERE status = ? ORDER BY id LIMIT 1`, TaskQueued).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -133,7 +245,7 @@ func (s *taskStore) claimNext(ctx context.Context) (*Task, error) {
 		return nil, err
 	}
 	now := timestamp()
-	result, err := s.db.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE web_tasks SET status = ?, started_at = ?, message = ? WHERE id = ? AND status = ?`,
 		TaskRunning, now, "任务开始运行", id, TaskQueued)
 	if err != nil {
@@ -146,7 +258,10 @@ func (s *taskStore) claimNext(ctx context.Context) (*Task, error) {
 	if changed == 0 {
 		return nil, nil
 	}
-	if err := s.addEvent(ctx, id, now, "开始执行，数据写入任务将串行运行"); err != nil {
+	if err := addEvent(ctx, tx, id, now, "开始执行，数据写入任务将串行运行"); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.task(ctx, id, false)
@@ -156,10 +271,18 @@ func (s *taskStore) updateProgress(ctx context.Context, taskID int64, message st
 	if message == "" {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE web_tasks SET message = ? WHERE id = ?`, message, taskID); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	return s.addEvent(ctx, taskID, timestamp(), message)
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE web_tasks SET message = ? WHERE id = ?`, message, taskID); err != nil {
+		return err
+	}
+	if err := addEvent(ctx, tx, taskID, timestamp(), message); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyReport, runErr error) error {
@@ -180,7 +303,12 @@ func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyRepor
 		reportJSON = string(encoded)
 	}
 	now := timestamp()
-	if _, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE web_tasks SET status = ?, finished_at = ?, message = ?, error = ?, report_json = ? WHERE id = ?`,
 		status, now, message, errText, reportJSON, taskID); err != nil {
 		return err
@@ -188,7 +316,10 @@ func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyRepor
 	if errText != "" {
 		message += "：" + errText
 	}
-	return s.addEvent(ctx, taskID, now, message)
+	if err := addEvent(ctx, tx, taskID, now, message); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *taskStore) task(ctx context.Context, id int64, withEvents bool) (*Task, error) {
@@ -249,7 +380,15 @@ func (s *taskStore) events(ctx context.Context, taskID int64) ([]TaskEvent, erro
 }
 
 func (s *taskStore) addEvent(ctx context.Context, taskID int64, createdAt, message string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO web_task_events(task_id, created_at, message) VALUES(?, ?, ?)`, taskID, createdAt, message)
+	return addEvent(ctx, s.db, taskID, createdAt, message)
+}
+
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func addEvent(ctx context.Context, execer sqlExecer, taskID int64, createdAt, message string) error {
+	_, err := execer.ExecContext(ctx, `INSERT INTO web_task_events(task_id, created_at, message) VALUES(?, ?, ?)`, taskID, createdAt, message)
 	return err
 }
 
