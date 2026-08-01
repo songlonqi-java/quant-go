@@ -126,6 +126,54 @@ var schemaMigrations = []schemaMigration{
 			);
 		`,
 	},
+	{
+		version: 3,
+		name:    "report center and portfolio snapshots",
+		sql: `
+			CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				task_id INTEGER NOT NULL UNIQUE,
+				ledger_json TEXT NOT NULL,
+				transaction_count INTEGER NOT NULL,
+				ledger_sha256 TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY(task_id) REFERENCES web_tasks(id)
+			);
+			CREATE TABLE IF NOT EXISTS web_reports (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				task_id INTEGER NOT NULL UNIQUE,
+				kind TEXT NOT NULL,
+				report_version TEXT NOT NULL,
+				target_date TEXT NOT NULL DEFAULT '',
+				trade_date TEXT NOT NULL DEFAULT '',
+				generated_at TEXT NOT NULL DEFAULT '',
+				code_version TEXT NOT NULL DEFAULT '',
+				strategy_version TEXT NOT NULL DEFAULT '',
+				data_version TEXT NOT NULL DEFAULT '',
+				portfolio_snapshot_id INTEGER,
+				report_json TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY(task_id) REFERENCES web_tasks(id),
+				FOREIGN KEY(portfolio_snapshot_id) REFERENCES portfolio_snapshots(id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_web_reports_trade_date_id
+				ON web_reports(trade_date DESC, id DESC);
+			CREATE INDEX IF NOT EXISTS idx_web_reports_kind_created
+				ON web_reports(kind, created_at DESC);
+			INSERT OR IGNORE INTO web_reports(
+				task_id, kind, report_version, target_date, trade_date, generated_at,
+				code_version, strategy_version, data_version, report_json, created_at
+			)
+			SELECT id, kind,
+				COALESCE(json_extract(report_json, '$.version'), 'daily-report-v1'),
+				COALESCE(json_extract(report_json, '$.target_date'), ''),
+				COALESCE(json_extract(report_json, '$.trade_date'), ''),
+				COALESCE(json_extract(report_json, '$.generated_at'), ''),
+				'legacy', 'legacy', COALESCE(json_extract(report_json, '$.trade_date'), ''),
+				report_json, created_at
+			FROM web_tasks WHERE report_json <> '';
+		`,
+	},
 }
 
 func openTaskStore(path string) (*taskStore, error) {
@@ -355,6 +403,11 @@ func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyRepor
 		UPDATE web_tasks SET status = ?, finished_at = ?, message = ?, error = ?, report_json = ? WHERE id = ?`,
 		status, now, message, errText, reportJSON, taskID); err != nil {
 		return err
+	}
+	if report != nil {
+		if err := persistReport(ctx, tx, taskID, taskKindDaily, report, now); err != nil {
+			return err
+		}
 	}
 	if errText != "" {
 		message += "：" + errText

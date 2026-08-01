@@ -1,7 +1,12 @@
 package web
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"runtime/debug"
+	"sort"
+	"strings"
 	"time"
 
 	"quant/internal/data"
@@ -33,12 +38,17 @@ type DailyReport struct {
 	Holdings        []portfolio.PositionStatus `json:"holdings"`
 	Sectors         []data.SectorDaily         `json:"sectors"`
 	Warnings        []string                   `json:"warnings,omitempty"`
+	CodeVersion     string                     `json:"code_version,omitempty"`
+	StrategyVersion string                     `json:"strategy_version,omitempty"`
+	DataVersion     string                     `json:"data_version,omitempty"`
+	SnapshotLedger  []portfolio.Transaction    `json:"-"`
 }
 
 func reportFromDaily(result *daily.Result) *DailyReport {
 	report := &DailyReport{
 		Version:     "daily-report-v1",
 		GeneratedAt: time.Now().UTC(),
+		CodeVersion: currentCodeVersion(),
 	}
 	if result == nil {
 		report.Warnings = append(report.Warnings, "日终工作流没有返回结果")
@@ -53,6 +63,7 @@ func reportFromDaily(result *daily.Result) *DailyReport {
 
 	signalResult := result.Signal
 	report.StrategyNames = append(report.StrategyNames, signalResult.StrategyNames...)
+	report.StrategyVersion = strategyVersion(report.StrategyNames)
 	report.Market = signalResult.MarketStatus
 	report.Intraday = signalResult.IntradayMarket
 	report.News = signalResult.NewsSummary
@@ -68,6 +79,7 @@ func reportFromDaily(result *daily.Result) *DailyReport {
 	report.Watchlist = append(report.Watchlist, signalResult.Watchlist...)
 	if signalResult.Dataset != nil {
 		report.TradeDate = signalResult.Dataset.LatestDate
+		report.DataVersion = signalResult.Dataset.LatestDate
 	}
 	if signalResult.PortfolioSummary != nil {
 		report.Holdings = append(report.Holdings, signalResult.PortfolioSummary.Holdings...)
@@ -88,4 +100,34 @@ func appendWarning(warnings *[]string, label string, err error) {
 	if err != nil {
 		*warnings = append(*warnings, fmt.Sprintf("%s：%v", label, err))
 	}
+}
+
+func currentCodeVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "development"
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" && setting.Value != "" {
+			version := setting.Value
+			if len(version) > 12 {
+				version = version[:12]
+			}
+			return version
+		}
+	}
+	if version := strings.TrimSpace(info.Main.Version); version != "" && version != "(devel)" {
+		return version
+	}
+	return "development"
+}
+
+func strategyVersion(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	ordered := append([]string(nil), names...)
+	sort.Strings(ordered)
+	digest := sha256.Sum256([]byte(strings.Join(ordered, "\n")))
+	return hex.EncodeToString(digest[:6])
 }

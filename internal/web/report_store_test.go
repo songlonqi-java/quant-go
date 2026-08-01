@@ -1,0 +1,151 @@
+package web
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"quant/internal/config"
+	"quant/internal/portfolio"
+)
+
+func TestFinishPersistsIndexedReportAndImmutablePortfolioSnapshot(t *testing.T) {
+	store, err := openTaskStore(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	ctx := context.Background()
+	task, err := store.createDaily(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.claimNext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	report := &DailyReport{
+		Version: "daily-report-v1", GeneratedAt: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC),
+		TargetDate: "20260801", TradeDate: "20260731", CodeVersion: "abc123", DataVersion: "20260731",
+		SnapshotLedger: []portfolio.Transaction{{
+			Date: "20260701", Code: "000001.SZ", Action: "buy", Shares: 100, Price: 10,
+		}},
+	}
+	if err := store.finish(ctx, task.ID, report, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	reports, err := store.reports(ctx, ReportFilter{Kind: taskKindDaily, TradeDate: "20260731", Status: TaskSucceeded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].SnapshotTransactions != 1 || reports[0].CodeVersion != "abc123" {
+		t.Fatalf("reports=%+v", reports)
+	}
+	stored, err := store.report(ctx, reports[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Report == nil || stored.Report.TradeDate != "20260731" {
+		t.Fatalf("stored report=%+v", stored)
+	}
+	if _, err := store.createPortfolioTransaction(ctx, portfolio.Transaction{
+		Date: "20260702", Code: "600000.SH", Action: "buy", Shares: 200, Price: 9,
+	}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.reportSnapshot(ctx, stored.PortfolioSnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Transactions) != 1 || snapshot.Transactions[0].Code != "000001.SZ" {
+		t.Fatalf("snapshot changed=%+v", snapshot)
+	}
+}
+
+func TestMigrationBackfillsLegacyTaskReports(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE web_tasks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, status TEXT NOT NULL,
+			created_at TEXT NOT NULL, started_at TEXT NOT NULL DEFAULT '', finished_at TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', report_json TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE web_task_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, created_at TEXT NOT NULL, message TEXT NOT NULL
+		);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportJSON, err := json.Marshal(DailyReport{Version: "daily-report-v1", TradeDate: "20260731", TargetDate: "20260801"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO web_tasks(kind, status, created_at, report_json) VALUES(?, ?, ?, ?)`,
+		taskKindDaily, TaskSucceeded, timestamp(), string(reportJSON)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := openTaskStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	reports, err := store.reports(context.Background(), ReportFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].TradeDate != "20260731" || reports[0].CodeVersion != "legacy" {
+		t.Fatalf("backfilled reports=%+v", reports)
+	}
+}
+
+func TestReportCenterRendersListAndDetail(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "web.db")
+	server, err := newServer(Options{
+		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath)}},
+		DatabasePath: dbPath,
+	}, func(context.Context, func(string)) (*DailyReport, error) { return &DailyReport{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	task, err := server.store.createDaily(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.claimNext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.store.finish(context.Background(), task.ID, &DailyReport{
+		Version: "daily-report-v1", TradeDate: "20260731", DataVersion: "20260731", CodeVersion: "test",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := server.store.reports(context.Background(), ReportFilter{})
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("reports=%+v err=%v", reports, err)
+	}
+
+	for _, path := range []string{"/reports", "/reports/" + strconv.FormatInt(reports[0].ID, 10)} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "20260731") {
+			t.Fatalf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
