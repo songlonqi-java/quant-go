@@ -19,6 +19,7 @@ type LoadOptions struct {
 
 type Dataset struct {
 	Bars              []data.DailyBar
+	AllCodeMap        map[string][]data.DailyBar
 	CodeMap           map[string][]data.DailyBar
 	StockNames        map[string]string
 	Fundamentals      *data.FundamentalStore
@@ -47,9 +48,11 @@ func Load(opts LoadOptions) (*Dataset, error) {
 	bars = data.ApplyStkLimits(bars, stkLimits)
 	sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
 
+	allCodeMap := sortedCodeMap(bars)
 	ds := &Dataset{
 		Bars:         bars,
-		CodeMap:      sortedCodeMap(bars),
+		AllCodeMap:   allCodeMap,
+		CodeMap:      cloneCodeMap(allCodeMap),
 		StockNames:   data.LoadStockNames(filepath.Join(opts.RawDir, "stocks.parquet")),
 		StkLimits:    stkLimits,
 		TradingDates: data.LoadTradeDates(opts.RawDir, bars),
@@ -71,6 +74,14 @@ func Load(opts LoadOptions) (*Dataset, error) {
 
 	ds.Moneyflows, _ = fetcher.LoadMoneyflowStore()
 	return ds, nil
+}
+
+func cloneCodeMap(source map[string][]data.DailyBar) map[string][]data.DailyBar {
+	cloned := make(map[string][]data.DailyBar, len(source))
+	for code, bars := range source {
+		cloned[code] = bars
+	}
+	return cloned
 }
 
 func LoadFundamentals(rawDir string) *data.FundamentalStore {

@@ -46,6 +46,22 @@ func TestRunExecutesSignalsAtNextOpen(t *testing.T) {
 	if sell.Price != 15 {
 		t.Fatalf("sell price = %.2f, want next open 15", sell.Price)
 	}
+	if sell.Shares == 0 || sell.Code != "000001.SZ" {
+		t.Fatalf("sell trade = %+v, want sold shares and security code", sell)
+	}
+}
+
+func TestCalculateMetricsMatchesTradesPerSecurity(t *testing.T) {
+	result := &Result{FinalEquity: 100, TradeCount: 4, Trades: []Trade{
+		{Code: "A", Action: "BUY", Price: 10, Shares: 100},
+		{Code: "B", Action: "BUY", Price: 20, Shares: 100},
+		{Code: "B", Action: "SELL", Price: 18, Shares: 100},
+		{Code: "A", Action: "SELL", Price: 12, Shares: 100},
+	}}
+	metrics := CalculateMetrics(result, 100, 0, 252)
+	if metrics.WinningTrades != 1 || metrics.LosingTrades != 1 || metrics.WinRate != 50 {
+		t.Fatalf("metrics = %+v, want one win and one loss", metrics)
+	}
 }
 
 func TestRunSkipsLimitUpBuyAtOpen(t *testing.T) {
@@ -89,6 +105,27 @@ func TestRunSkipsExactLimitUpBuyAtOpen(t *testing.T) {
 	}
 	if result.SkippedSignals != 1 {
 		t.Fatalf("SkippedSignals = %d, want 1", result.SkippedSignals)
+	}
+}
+
+func TestRunDoesNotApplyMainBoardFallbackWhenExactLimitIsAvailable(t *testing.T) {
+	bars := []data.DailyBar{
+		bar("20260101", 10, 10, 1000),
+		bar("20260102", 11, 11, 1000),
+	}
+	bars[1].TsCode = "300001.SZ"
+	bars[1].UpLimit = 12
+	bars[1].DownLimit = 8
+
+	result := Run(bars, func(_ []data.DailyBar, idx int) strategy.SignalType {
+		if idx == 0 {
+			return strategy.Buy
+		}
+		return strategy.Hold
+	}, Config{InitialCapital: 2000})
+
+	if result.TradeCount != 1 {
+		t.Fatalf("TradeCount = %d, want tradable ChiNext open", result.TradeCount)
 	}
 }
 

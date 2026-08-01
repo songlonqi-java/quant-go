@@ -8,6 +8,7 @@ import (
 )
 
 type Trade struct {
+	Code       string
 	Date       string
 	SignalDate string
 	Action     string
@@ -35,7 +36,7 @@ func DefaultConfig() Config {
 		InitialCapital: 100000.0,
 		Commission:     0.0003,
 		Slippage:       0.0001,
-		LimitPct:       0.095,
+		LimitPct:       0,
 		LotSize:        100,
 	}
 }
@@ -51,9 +52,6 @@ type Result struct {
 func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) strategy.SignalType, cfg Config) *Result {
 	if len(bars) < 2 {
 		return &Result{FinalEquity: cfg.InitialCapital}
-	}
-	if cfg.LimitPct <= 0 {
-		cfg.LimitPct = DefaultConfig().LimitPct
 	}
 	if cfg.LotSize <= 0 {
 		cfg.LotSize = DefaultConfig().LotSize
@@ -88,6 +86,7 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) stra
 							holding = true
 							tradeCount++
 							trades = append(trades, Trade{
+								Code:       bars[i].TsCode,
 								Date:       bars[i].TradeDate,
 								SignalDate: pendingSignalDate,
 								Action:     "BUY",
@@ -108,18 +107,20 @@ func Run(bars []data.DailyBar, signalFn func(bars []data.DailyBar, idx int) stra
 			case strategy.Sell:
 				if holding && canSellAtOpen(prev, bars[i], cfg.LimitPct) {
 					execPrice := bars[i].TradeOpen() * (1 - cfg.Slippage)
-					proceeds := shares * execPrice
+					soldShares := shares
+					proceeds := soldShares * execPrice
 					cost := proceeds * cfg.Commission
 					cash += proceeds - cost
 					shares = 0
 					holding = false
 					tradeCount++
 					trades = append(trades, Trade{
+						Code:       bars[i].TsCode,
 						Date:       bars[i].TradeDate,
 						SignalDate: pendingSignalDate,
 						Action:     "SELL",
 						Price:      execPrice,
-						Shares:     0,
+						Shares:     soldShares,
 						Cash:       cash,
 						Total:      cash,
 					})
@@ -164,13 +165,13 @@ func canBuyAtOpen(prev, cur data.DailyBar, limitPct float64) bool {
 		return false
 	}
 	prevClose := prev.TradeClose()
-	if cur.IsLimitUpOpen() {
-		return false
+	if cur.UpLimit > 0 {
+		return !cur.IsLimitUpOpen()
 	}
-	if prevClose > 0 && open >= prevClose*(1+limitPct) {
-		return false
+	if limitPct > 0 {
+		return !data.IsApproxLimitUpWithThreshold(open, prevClose, limitPct)
 	}
-	return true
+	return !data.IsApproxLimitUp(cur.TsCode, open, prevClose)
 }
 
 func canSellAtOpen(prev, cur data.DailyBar, limitPct float64) bool {
@@ -179,11 +180,11 @@ func canSellAtOpen(prev, cur data.DailyBar, limitPct float64) bool {
 		return false
 	}
 	prevClose := prev.TradeClose()
-	if cur.IsLimitDownOpen() {
-		return false
+	if cur.DownLimit > 0 {
+		return !cur.IsLimitDownOpen()
 	}
-	if prevClose > 0 && open <= prevClose*(1-limitPct) {
-		return false
+	if limitPct > 0 {
+		return !data.IsApproxLimitDownWithThreshold(open, prevClose, limitPct)
 	}
-	return true
+	return !data.IsApproxLimitDown(cur.TsCode, open, prevClose)
 }

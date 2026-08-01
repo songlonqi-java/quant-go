@@ -54,7 +54,7 @@ func (l *LimitUp) buySignalAt(bars []data.DailyBar, idx int) bool {
 		isVolumeUp := avgVol > 0 && bars[idx].Vol > avgVol*l.VolumeRatio
 		isHoldingUp := bars[idx].TradeLow() > prevClose*0.98
 		isNotOpenLimit := curOpen < prevHigh*1.05
-		if bars[idx].HasLimitPrices() {
+		if bars[idx].UpLimit > 0 {
 			isNotOpenLimit = !bars[idx].IsLimitUpOpen()
 		}
 
@@ -74,12 +74,16 @@ func (l *LimitUp) isLimitUpDay(bars []data.DailyBar, idx int) bool {
 		return false
 	}
 	bar := bars[idx]
-	if bar.HasLimitPrices() {
+	if bar.UpLimit > 0 {
 		return bar.IsLimitUpClose() || bar.IsLimitUpPrice(bar.TradeHigh())
+	}
+	threshold := data.DefaultLimitThresholdPct(bar.TsCode) * 100
+	if l.LimitPct > 0 && l.LimitPct != 9.5 {
+		threshold = l.LimitPct
 	}
 	changePct := (bar.TradeClose()/prevClose - 1) * 100
 	highPct := (bar.TradeHigh()/prevClose - 1) * 100
-	return changePct >= l.LimitPct || highPct >= l.LimitPct
+	return changePct >= threshold || highPct >= threshold
 }
 
 func (l *LimitUp) Score(bars []data.DailyBar, idx int) float64 {

@@ -14,6 +14,8 @@ import (
 	"quant/internal/news"
 	"quant/internal/portfolio"
 	"quant/internal/realtime"
+	"quant/internal/sector"
+	signals "quant/internal/signal"
 )
 
 func TestLoadPortfolioSummaryIgnoresMissingPortfolioFile(t *testing.T) {
@@ -41,8 +43,48 @@ func TestLoadPortfolioSummaryUsesProvidedLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(summary.Holdings) != 1 || summary.Holdings[0].Code != "000001.SZ" {
+	if len(summary.Holdings) != 1 || summary.Holdings[0].Code != "000001.SZ" || summary.TotalMarketValue != 1100 {
 		t.Fatalf("summary=%+v", summary)
+	}
+}
+
+func TestLoadPortfolioSummaryUsesUnfilteredMonitoringUniverse(t *testing.T) {
+	ledger := &portfolio.Ledger{Transactions: []portfolio.Transaction{{
+		Date: "20260102", Code: "000003.SZ", Action: "buy", Shares: 100, Price: 10,
+	}}}
+	ds := &dataset.Dataset{
+		CodeMap: map[string][]data.DailyBar{},
+		AllCodeMap: map[string][]data.DailyBar{
+			"000003.SZ": {{TsCode: "000003.SZ", TradeDate: "20260103", RawClose: 8}},
+		},
+		StockNames: map[string]string{"000003.SZ": "ST测试"},
+	}
+	summary, err := loadPortfolioSummary("unused.yaml", ledger, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Holdings) != 1 || summary.Holdings[0].LastPrice != 8 {
+		t.Fatalf("summary = %+v, want unfiltered holding marked at latest available price", summary)
+	}
+}
+
+func TestBuildPortfolioBudgetDeductsExistingHoldings(t *testing.T) {
+	summary := &portfolio.Summary{Holdings: []portfolio.PositionStatus{
+		{Code: "000001.SZ", MarketVal: 20_000},
+		{Code: "000002.SZ", MarketVal: 10_000},
+	}}
+	memberships := sector.NewIndustryMemberships([]data.StockInfo{
+		{TsCode: "000001.SZ", Industry: "银行"},
+		{TsCode: "000002.SZ", Industry: "银行"},
+	})
+	budget := buildPortfolioBudget(config.PortfolioConfig{
+		ReferenceEquity:      100_000,
+		MaxTotalPositionPct:  70,
+		MaxSinglePositionPct: 15,
+		MaxSectorPositionPct: 25,
+	}, summary, memberships, "20260103", signals.PositionDecision{Action: signals.PositionActionActive})
+	if budget.ExistingTotalPct != 30 || budget.ExistingCodePct["000001.SZ"] != 20 || budget.ExistingSectorPct["银行"] != 30 {
+		t.Fatalf("budget = %+v", budget)
 	}
 }
 

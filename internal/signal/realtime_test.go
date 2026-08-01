@@ -46,3 +46,18 @@ func TestApplyRealtimeQuotesAddsIntradayLabels(t *testing.T) {
 		t.Fatalf("IntradayLabels = %v, want 高开>3%%", results[0].IntradayLabels)
 	}
 }
+
+func TestRealtimeLimitStatusTrustsExactPriceBeforeFallback(t *testing.T) {
+	quote := realtime.Quote{Code: "300001.SZ", PrevClose: 10, Current: 11, UpdateAt: "2026-07-24 10:30:00"}
+	limits := data.NewStkLimitStore([]data.StkLimit{{TsCode: "300001.SZ", TradeDate: "20260724", UpLimit: 12, DownLimit: 8}})
+	up, down := realtimeLimitStatus(quote, limits)
+	if up || down {
+		t.Fatalf("exact limit status = %v/%v, want tradable", up, down)
+	}
+
+	quote.Current = 11.96
+	up, down = realtimeLimitStatus(quote, nil)
+	if !up || down {
+		t.Fatalf("board fallback status = %v/%v, want limit-up", up, down)
+	}
+}

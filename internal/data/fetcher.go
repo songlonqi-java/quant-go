@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -91,11 +92,10 @@ func (f *Fetcher) FetchHistorical(ctx context.Context, startYear, endYear int, m
 	}
 	stocks := FilterStocksByPrefix(allStocks, f.prefixes)
 	fmt.Printf(">>> 前缀过滤后共 %d 只股票\n", len(stocks))
-
-	stocks, allowedCodes, err := f.FilterStocksByMarketCap(ctx, stocks, minMarketCap)
-	if err != nil {
-		return fmt.Errorf("市值过滤失败: %w", err)
+	if minMarketCap > 0 {
+		fmt.Printf(">>> 历史行情归档不应用当前市值过滤（配置 %.0f 亿仅用于当前候选池）\n", minMarketCap)
 	}
+	allowedCodes := stockCodes(stocks)
 	codeSet := make(map[string]bool, len(allowedCodes))
 	for _, c := range allowedCodes {
 		codeSet[c] = true
@@ -380,10 +380,10 @@ func (f *Fetcher) FetchDailyBasicHistory(ctx context.Context, startYear, endYear
 		return err
 	}
 	stocks := FilterStocksByPrefix(allStocks, f.prefixes)
-	stocks, allowedCodes, err := f.FilterStocksByMarketCap(ctx, stocks, minMarketCap)
-	if err != nil {
-		return err
+	if minMarketCap > 0 {
+		fmt.Printf(">>> 历史估值归档不应用当前市值过滤（配置 %.0f 亿仅用于当前候选池）\n", minMarketCap)
 	}
+	allowedCodes := stockCodes(stocks)
 	codeSet := make(map[string]bool, len(allowedCodes))
 	for _, c := range allowedCodes {
 		codeSet[c] = true
@@ -553,17 +553,10 @@ func (f *Fetcher) FetchFinancials(ctx context.Context, startDate, endDate string
 	}
 	stocks := FilterStocksByPrefix(allStocks, f.prefixes)
 	fmt.Printf(">>> 前缀过滤后 %d 只\n", len(stocks))
-
-	stocks, allowedCodes, err := f.FilterStocksByMarketCap(ctx, stocks, minMarketCap)
-	if err != nil {
-		return err
+	if minMarketCap > 0 {
+		fmt.Printf(">>> 历史财务归档不应用当前市值过滤（配置 %.0f 亿仅用于当前候选池）\n", minMarketCap)
 	}
-	codeSet := make(map[string]bool, len(allowedCodes))
-	for _, c := range allowedCodes {
-		codeSet[c] = true
-	}
-
-	codes := allowedCodes
+	codes := stockCodes(stocks)
 	fmt.Printf(">>> 财务数据拉取 %d 只股票\n", len(codes))
 
 	fmt.Printf(">>> 拉取财务指标 (ROE/ROA/利润率)...\n")
@@ -604,6 +597,17 @@ func (f *Fetcher) FetchFinancials(ctx context.Context, startDate, endDate string
 
 	f.client.LogStatus()
 	return nil
+}
+
+func stockCodes(stocks []StockInfo) []string {
+	codes := make([]string, 0, len(stocks))
+	for _, stock := range stocks {
+		if stock.TsCode != "" {
+			codes = append(codes, stock.TsCode)
+		}
+	}
+	sort.Strings(codes)
+	return codes
 }
 
 func (f *Fetcher) FetchHs300(ctx context.Context) ([]HsConst, error) {

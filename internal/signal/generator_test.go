@@ -270,6 +270,17 @@ func TestBoundedContributionTreatsNonFiniteScoreAsNeutral(t *testing.T) {
 	}
 }
 
+func TestSignalStrengthAndConfidenceAreDirectionSymmetric(t *testing.T) {
+	if boundedContribution(-20) <= boundedContribution(-5) {
+		t.Fatalf("stronger negative sell score should have greater magnitude: %.2f <= %.2f", boundedContribution(-20), boundedContribution(-5))
+	}
+	buy := confidenceScore(SignalResult{BuyCount: 2, TotalScore: 2})
+	sell := confidenceScore(SignalResult{SellCount: 2, TotalScore: -2})
+	if buy != sell {
+		t.Fatalf("buy confidence %.1f != symmetric sell confidence %.1f", buy, sell)
+	}
+}
+
 func TestApplySectorContextAddsSectorLabels(t *testing.T) {
 	results := []SignalResult{
 		{

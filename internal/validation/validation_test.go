@@ -37,6 +37,9 @@ func TestBuildProducesOutOfSampleStatsWithFeasibleNextOpenEntry(t *testing.T) {
 	if store.FeasibleTrades == 0 {
 		t.Fatal("FeasibleTrades = 0, want feasible next-open outcomes")
 	}
+	if store.StrategyFingerprint == "" || store.DataFingerprint == "" || store.BuildFingerprint == "" {
+		t.Fatalf("build fingerprints missing: %#v", store)
+	}
 	stats, ok := store.Stats["horizon|short"]
 	if !ok || stats.Samples == 0 {
 		t.Fatalf("short horizon stats missing: %#v", store.Stats)
@@ -55,6 +58,48 @@ func TestBuildProducesOutOfSampleStatsWithFeasibleNextOpenEntry(t *testing.T) {
 	}
 	if loaded.Stats["horizon|short"].Samples != stats.Samples {
 		t.Fatalf("loaded samples = %d, want %d", loaded.Stats["horizon|short"].Samples, stats.Samples)
+	}
+}
+
+func TestStoreCompatibilityRejectsStrategyChangesAndStaleData(t *testing.T) {
+	strategies := []strategy.Strategy{alwaysBuyStrategy{name: "donchian"}}
+	codeMap := map[string][]data.DailyBar{"000001.SZ": risingBars("000001.SZ", 10)}
+	fingerprint, err := StrategyFingerprint(strategies, 0.0003, 0.0001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataFingerprint := fingerprintData(codeMap, nil, nil)
+	store := &Store{
+		Version:             formatVersion,
+		StartDate:           codeMap["000001.SZ"][0].TradeDate,
+		EndDate:             codeMap["000001.SZ"][9].TradeDate,
+		StrategyFingerprint: fingerprint,
+		DataFingerprint:     dataFingerprint,
+	}
+	store.BuildFingerprint = fingerprintBuild(fingerprint, dataFingerprint, store.StartDate, store.EndDate, 0)
+	if err := store.ValidateCompatibility(strategies, 0.0003, 0.0001, codeMap, nil, nil); err != nil {
+		t.Fatalf("matching evidence rejected: %v", err)
+	}
+	if err := store.ValidateCompatibility([]strategy.Strategy{alwaysBuyStrategy{name: "roc"}}, 0.0003, 0.0001, codeMap, nil, nil); err == nil {
+		t.Fatal("changed strategy should invalidate evidence")
+	}
+	changed := map[string][]data.DailyBar{"000001.SZ": append([]data.DailyBar(nil), codeMap["000001.SZ"]...)}
+	changed["000001.SZ"][9].RawClose++
+	if err := store.ValidateCompatibility(strategies, 0.0003, 0.0001, changed, nil, nil); err == nil {
+		t.Fatal("changed market data should invalidate evidence")
+	}
+	store.BuildFingerprint = "tampered"
+	if err := store.ValidateCompatibility(strategies, 0.0003, 0.0001, codeMap, nil, nil); err == nil {
+		t.Fatal("changed build fingerprint should invalidate evidence")
+	}
+}
+
+func TestFeasibleReturnKeepsOpenEntryWhenTargetDayBreaksPreviousLow(t *testing.T) {
+	bars := risingBars("000001.SZ", 8)
+	bars[2].Low = bars[1].Low * 0.9
+	bars[2].RawLow = bars[2].Low
+	if _, ok := feasibleReturn(bars, 1, strategy.HorizonShort, 0, 0, ""); !ok {
+		t.Fatal("intraday break after an open entry must not erase the trade")
 	}
 }
 

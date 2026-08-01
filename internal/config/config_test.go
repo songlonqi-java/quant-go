@@ -43,6 +43,20 @@ func TestAIConfigurationSupportsCustomKeyEnvironment(t *testing.T) {
 	}
 }
 
+func TestPortfolioDefaultsAndReferenceEquityFallback(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Portfolio != DefaultPortfolioConfig() {
+		t.Fatalf("portfolio defaults = %+v", cfg.Portfolio)
+	}
+	normalized := (PortfolioConfig{MaxTotalPositionPct: 80}).Normalized(250_000)
+	if normalized.ReferenceEquity != 250_000 || normalized.MaxTotalPositionPct != 80 || normalized.MaxSinglePositionPct != 15 {
+		t.Fatalf("normalized portfolio config = %+v", normalized)
+	}
+}
+
 func assertSameStrategySet(t *testing.T, actual, expected []string, source string) {
 	t.Helper()
 	if len(actual) != len(expected) {

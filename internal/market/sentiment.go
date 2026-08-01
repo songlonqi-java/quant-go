@@ -505,30 +505,13 @@ func minInt(a, b int) int {
 }
 
 func isLimitUpClose(code string, cur data.DailyBar, prevClose float64) bool {
-	if cur.IsLimitUpClose() {
-		return true
-	}
-	return cur.TradeClose() >= prevClose*(1+defaultLimitPct(code))*0.999
+	cur.TsCode = code
+	return cur.IsLimitUpCloseWithFallback(prevClose)
 }
 
 func isLimitDownClose(code string, cur data.DailyBar, prevClose float64) bool {
-	if cur.IsLimitDownClose() {
-		return true
-	}
-	return cur.TradeClose() <= prevClose*(1-defaultLimitPct(code))*1.001
-}
-
-func defaultLimitPct(code string) float64 {
-	code = strings.ToUpper(code)
-	switch {
-	case strings.HasSuffix(code, ".BJ"):
-		return 0.30
-	case strings.HasPrefix(code, "300") || strings.HasPrefix(code, "301") ||
-		strings.HasPrefix(code, "688") || strings.HasPrefix(code, "689"):
-		return 0.20
-	default:
-		return 0.10
-	}
+	cur.TsCode = code
+	return cur.IsLimitDownCloseWithFallback(prevClose)
 }
 
 func contains(values []string, target string) bool {

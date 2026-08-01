@@ -14,6 +14,7 @@ type Config struct {
 	Fetch      FetchConfig      `yaml:"fetch"`
 	Backtest   BacktestConfig   `yaml:"backtest"`
 	Signal     SignalConfig     `yaml:"signal"`
+	Portfolio  PortfolioConfig  `yaml:"portfolio"`
 	Validation ValidationConfig `yaml:"validation"`
 	AI         AIConfig         `yaml:"ai"`
 	Backup     BackupConfig     `yaml:"backup"`
@@ -66,6 +67,48 @@ type SignalConfig struct {
 	TopN              int      `yaml:"top_n"`
 }
 
+// PortfolioConfig defines account-level risk limits shared by live signal
+// allocation and the multi-security portfolio backtest. ReferenceEquity is the
+// current account equity used to translate portfolio.yaml market values into
+// exposure percentages; it should include both cash and positions.
+type PortfolioConfig struct {
+	ReferenceEquity      float64 `yaml:"reference_equity"`
+	MaxTotalPositionPct  float64 `yaml:"max_total_position_pct"`
+	MaxSinglePositionPct float64 `yaml:"max_single_position_pct"`
+	MaxSectorPositionPct float64 `yaml:"max_sector_position_pct"`
+}
+
+func DefaultPortfolioConfig() PortfolioConfig {
+	return PortfolioConfig{
+		ReferenceEquity:      100000,
+		MaxTotalPositionPct:  70,
+		MaxSinglePositionPct: 15,
+		MaxSectorPositionPct: 25,
+	}
+}
+
+// Normalized supplies safe defaults for Config values constructed directly in
+// tests or by library callers instead of going through Load.
+func (p PortfolioConfig) Normalized(fallbackEquity float64) PortfolioConfig {
+	defaults := DefaultPortfolioConfig()
+	if p.ReferenceEquity <= 0 {
+		p.ReferenceEquity = fallbackEquity
+		if p.ReferenceEquity <= 0 {
+			p.ReferenceEquity = defaults.ReferenceEquity
+		}
+	}
+	if p.MaxTotalPositionPct <= 0 {
+		p.MaxTotalPositionPct = defaults.MaxTotalPositionPct
+	}
+	if p.MaxSinglePositionPct <= 0 {
+		p.MaxSinglePositionPct = defaults.MaxSinglePositionPct
+	}
+	if p.MaxSectorPositionPct <= 0 {
+		p.MaxSectorPositionPct = defaults.MaxSectorPositionPct
+	}
+	return p
+}
+
 // ValidationConfig controls the out-of-sample evidence required before a
 // historical signal may be promoted into the formal recommendation list.
 // Path is relative to data.raw_dir when it is not absolute.
@@ -112,6 +155,7 @@ var defaultConfig = Config{
 		},
 		TopN: 20,
 	},
+	Portfolio: DefaultPortfolioConfig(),
 	Validation: ValidationConfig{
 		Enabled:           true,
 		Path:              "validation/evidence.json",

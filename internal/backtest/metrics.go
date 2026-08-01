@@ -69,24 +69,8 @@ func CalculateMetrics(result *Result, initialCapital float64, riskFreeRate float
 		m.CalmarRatio = m.AnnualizedReturn / m.MaxDrawdown
 	}
 
-	var buys, sells []Trade
-	for _, t := range result.Trades {
-		if t.Action == "BUY" {
-			buys = append(buys, t)
-		} else if t.Action == "SELL" {
-			sells = append(sells, t)
-		}
-	}
-
-	var profits []float64
 	var totalProfit, totalLoss float64
-	minLen := len(buys)
-	if len(sells) < minLen {
-		minLen = len(sells)
-	}
-	for i := 0; i < minLen; i++ {
-		pct := (sells[i].Price - buys[i].Price) / buys[i].Price * 100
-		profits = append(profits, pct)
+	for _, pct := range realizedTradeReturns(result.Trades) {
 		if pct > 0 {
 			m.WinningTrades++
 			totalProfit += pct
@@ -110,6 +94,55 @@ func CalculateMetrics(result *Result, initialCapital float64, riskFreeRate float
 	}
 
 	return m
+}
+
+type openLot struct {
+	shares float64
+	price  float64
+}
+
+// realizedTradeReturns matches buys and sells FIFO per security. The previous
+// global buy/sell pairing produced incorrect win rates as soon as trades from
+// different stocks were interleaved in a portfolio backtest.
+func realizedTradeReturns(trades []Trade) []float64 {
+	open := make(map[string][]openLot)
+	returns := make([]float64, 0)
+	for _, trade := range trades {
+		switch trade.Action {
+		case "BUY":
+			if trade.Shares > 0 && trade.Price > 0 {
+				open[trade.Code] = append(open[trade.Code], openLot{shares: trade.Shares, price: trade.Price})
+			}
+		case "SELL":
+			lots := open[trade.Code]
+			if len(lots) == 0 || trade.Price <= 0 {
+				continue
+			}
+			remaining := trade.Shares
+			if remaining <= 0 {
+				for _, lot := range lots {
+					remaining += lot.shares
+				}
+			}
+			var matched, buyCost float64
+			for len(lots) > 0 && remaining > 1e-9 {
+				shares := math.Min(remaining, lots[0].shares)
+				matched += shares
+				buyCost += shares * lots[0].price
+				remaining -= shares
+				lots[0].shares -= shares
+				if lots[0].shares <= 1e-9 {
+					lots = lots[1:]
+				}
+			}
+			open[trade.Code] = lots
+			if matched > 0 && buyCost > 0 {
+				avgBuy := buyCost / matched
+				returns = append(returns, (trade.Price/avgBuy-1)*100)
+			}
+		}
+	}
+	return returns
 }
 
 func (m PerformanceMetrics) Print() {

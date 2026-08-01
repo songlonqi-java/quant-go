@@ -17,6 +17,7 @@ import (
 	"quant/internal/market"
 	"quant/internal/portfolio"
 	"quant/internal/realtime"
+	"quant/internal/sector"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 	"quant/internal/validation"
@@ -332,13 +333,17 @@ func backtestCmd() *cobra.Command {
 		endDate       string
 		capital       float64
 		topN          int
+		ensemble      bool
 		allowAdjusted bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "backtest",
 		Short: "运行量化策略回测",
-		Long:  `加载本地数据，对指定策略进行历史回测，输出绩效报告。`,
+		Long: `加载本地数据并输出绩效报告。
+
+默认模式逐只股票、逐个策略独立满仓，仅用于策略诊断；--ensemble 使用
+多股票共享资金账户，复用正式信号的聚合、市场状态、资格过滤、Top-N 和组合预算。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			reg := strategy.DefaultRegistry()
@@ -375,10 +380,14 @@ func backtestCmd() *cobra.Command {
 			}
 			bars = applyStkLimitStore(fetcher, bars)
 
-			if startDate != "" {
+			qualityBars := bars
+			if startDate != "" || endDate != "" {
+				qualityBars = filterByDateRange(bars, startDate, endDate)
+			}
+			if !ensemble && (startDate != "" || endDate != "") {
 				bars = filterByDateRange(bars, startDate, endDate)
 			}
-			if q := data.CheckPriceDataQuality(bars); !q.HasCompleteRawPrices() && !allowAdjusted {
+			if q := data.CheckPriceDataQuality(qualityBars); !q.HasCompleteRawPrices() && !allowAdjusted {
 				return fmt.Errorf("%s；回测成交需要真实价字段，请重新拉取行情数据，或临时使用 --allow-adjusted-trades", q.Summary())
 			}
 
@@ -395,6 +404,53 @@ func backtestCmd() *cobra.Command {
 				Commission:     cfg.Backtest.Commission,
 				Slippage:       cfg.Backtest.Slippage,
 				LotSize:        cfg.Backtest.LotSize,
+			}
+
+			if ensemble {
+				portfolioCfg := cfg.Portfolio.Normalized(capital)
+				moneyflows, moneyflowErr := fetcher.LoadMoneyflowStore()
+				if moneyflowErr != nil {
+					fmt.Printf("警告: 加载资金流数据失败: %v\n", moneyflowErr)
+				}
+				memberships, membershipErr := sector.LoadIndustryMemberships(cfg.Data.RawDir)
+				if membershipErr != nil {
+					fmt.Printf("警告: 加载行业归属失败，组合回测将不启用行业上限: %v\n", membershipErr)
+				}
+				candidateTopN := topN
+				if candidateTopN == 0 {
+					candidateTopN = cfg.Signal.TopN
+				}
+				result, err := backtest.RunPortfolio(backtest.PortfolioOptions{
+					CodeMap:      codeMap,
+					StockNames:   data.LoadStockNames(cfg.Data.RawDir + "/stocks.parquet"),
+					Strategies:   selectedStrategies,
+					Moneyflows:   moneyflows,
+					StartDate:    startDate,
+					EndDate:      endDate,
+					TopN:         candidateTopN,
+					Config:       btCfg,
+					MaxTotalPct:  portfolioCfg.MaxTotalPositionPct,
+					MaxSinglePct: portfolioCfg.MaxSinglePositionPct,
+					MaxSectorPct: portfolioCfg.MaxSectorPositionPct,
+					SectorName: func(code, date string) string {
+						if membership, ok := memberships.PrimaryIndustry(code, date); ok {
+							return membership.SectorName
+						}
+						return ""
+					},
+				})
+				if err != nil {
+					return err
+				}
+				fmt.Println("\n========== 多策略组合回测 ==========")
+				fmt.Printf("策略: %s\n", strings.Join(strategyNames, ", "))
+				fmt.Printf("候选上限: 每周期 %d，组合/单票/行业上限: %.0f%% / %.0f%% / %.0f%%\n",
+					candidateTopN, portfolioCfg.MaxTotalPositionPct, portfolioCfg.MaxSinglePositionPct, portfolioCfg.MaxSectorPositionPct)
+				metrics := backtest.CalculateMetrics(result, capital, cfg.Backtest.RiskFreeRate, 252)
+				metrics.Print()
+				fmt.Printf("未成交/延迟成交次数: %d\n", result.SkippedSignals)
+				fmt.Println("说明: evidence.json 不会回灌历史日期，以免使用未来汇总证据；组合回测按当日信号资格规则逐日决策。")
+				return nil
 			}
 
 			for _, s := range selectedStrategies {
@@ -452,7 +508,8 @@ func backtestCmd() *cobra.Command {
 	cmd.Flags().StringVar(&startDate, "start", "", "起始日期 (YYYYMMDD)")
 	cmd.Flags().StringVar(&endDate, "end", "", "结束日期 (YYYYMMDD)")
 	cmd.Flags().Float64Var(&capital, "capital", 0, "初始资金")
-	cmd.Flags().IntVarP(&topN, "top", "n", 0, "只回测前 N 只股票，按代码排序 (0=全部)")
+	cmd.Flags().IntVarP(&topN, "top", "n", 0, "单策略模式只测前N只股票；组合模式为每周期候选数（0=配置值）")
+	cmd.Flags().BoolVar(&ensemble, "ensemble", false, "运行共享资金账户的多股票、多策略组合回测")
 	cmd.Flags().BoolVar(&allowAdjusted, "allow-adjusted-trades", false, "允许用复权价近似成交价（仅用于旧数据临时验证）")
 
 	return cmd

@@ -62,18 +62,12 @@ func intradayLabels(r SignalResult, q realtime.Quote, limitStore *data.StkLimitS
 func realtimeLimitStatus(q realtime.Quote, limitStore *data.StkLimitStore) (bool, bool) {
 	if limitStore != nil {
 		if limit, ok := limitStore.Get(q.Code, q.TradeDate()); ok {
-			if limit.UpLimit > 0 && q.Current >= limit.UpLimit*0.999 {
-				return true, false
-			}
-			if limit.DownLimit > 0 && q.Current <= limit.DownLimit*1.001 {
-				return false, true
-			}
+			limitUp := limit.UpLimit > 0 && q.Current >= limit.UpLimit*0.999
+			limitDown := limit.DownLimit > 0 && q.Current <= limit.DownLimit*1.001
+			return limitUp, limitDown
 		}
 	}
-	if q.PrevClose <= 0 {
-		return false, false
-	}
-	return q.Current >= q.PrevClose*1.095, q.Current <= q.PrevClose*0.905
+	return data.IsApproxLimitUp(q.Code, q.Current, q.PrevClose), data.IsApproxLimitDown(q.Code, q.Current, q.PrevClose)
 }
 
 func joinLabels(labels []string) string {

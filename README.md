@@ -43,6 +43,9 @@ go build -o go-quant ./cmd/go-quant/
 # 4. 构建历史验证证据（首次和策略/数据更新后执行）
 ./go-quant validate build
 
+# 可执行链路的共享资金组合回测（默认 backtest 仅做单标的诊断）
+./go-quant backtest --ensemble
+
 # 5. 查看信号
 ./go-quant signal -n 5 --watch 15 # 每个周期买入/卖出各最多5条，额外显示15条观察机会
 ./go-quant forward validate       # 回填前向测试收益
@@ -63,7 +66,7 @@ go build -o quant-web ./cmd/quant-web/
 | `./go-quant fetch` | 拉取日线/涨跌停价/资金流向/基本面/财务/指数数据 |
 | `./go-quant market realtime` | 拉取全市场盘中报价，计算涨跌家数和涨跌停扩散 |
 | `./go-quant signal` | 生成短线/中线/长线买卖信号（市场+新闻+持仓+策略） |
-| `./go-quant backtest` | 策略历史回测 |
+| `./go-quant backtest` | 单标的策略诊断；加 `--ensemble` 运行共享资金组合回测 |
 | `./go-quant validate build` | 回放完整推荐链路，生成样本外验证证据 |
 | `./go-quant value monthly` | 月度生成并持久化价值候选池 |
 | `./go-quant value quarterly` | 季度复核价值候选池的基本面和估值回归 |
@@ -85,6 +88,8 @@ go build -o quant-web ./cmd/quant-web/
 | 长线 | `dividend_deviation` `quality_value` `earnings_growth` | 120-600 天周期 |
 
 详见 [docs/strategies.md](docs/strategies.md)
+
+策略正确性审计和修复优先级见 [docs/strategy-audit.md](docs/strategy-audit.md)。
 
 ## 数据口径
 
@@ -139,6 +144,7 @@ quant-go/
 |------|------|
 | [docs/commands.md](docs/commands.md) | 完整 CLI 命令参考 |
 | [docs/strategies.md](docs/strategies.md) | 全部策略详解 |
+| [docs/strategy-audit.md](docs/strategy-audit.md) | 策略审计、P0 修复状态与后续路线 |
 | [docs/portfolio.md](docs/portfolio.md) | 持仓管理流程 |
 | [docs/prompts.md](docs/prompts.md) | AI 提示语速查 |
 | [docs/web.md](docs/web.md) | 本地 Web 控制台第一期 |

@@ -29,6 +29,8 @@ type Strategy interface {
 
 type ScoreStrategy interface {
 	Strategy
+	// Score describes setup strength. Aggregation uses its magnitude after the
+	// strategy has emitted BUY or SELL; Signal supplies the direction.
 	Score(bars []data.DailyBar, idx int) float64
 }
 

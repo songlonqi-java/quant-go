@@ -142,12 +142,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	allSignals := signals.GenerateWithContextAndMoneyflow(ds.CodeMap, selectedStrategies, 0, ds.StockNames, result.MarketStatus, ds.Moneyflows)
-	if result.SectorReport != nil {
-		if memberships, err := sector.LoadIndustryMemberships(cfg.Data.RawDir); err == nil {
-			signals.ApplySectorContext(allSignals, result.SectorReport, memberships)
-		} else if result.SectorErr == nil {
-			result.SectorErr = err
-		}
+	memberships, membershipErr := sector.LoadIndustryMemberships(cfg.Data.RawDir)
+	if membershipErr == nil {
+		signals.ApplySectorContext(allSignals, result.SectorReport, memberships)
+	} else if result.SectorErr == nil {
+		result.SectorErr = membershipErr
 	}
 	candidatePool := signals.SelectCandidatePool(allSignals, topN)
 	watchPool := signals.SelectWatchlist(allSignals, candidatePool, opts.WatchN*3)
@@ -161,15 +160,23 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				result.ValidationErr = err
 			}
 		} else {
-			policy := validation.Policy{
-				MinSamples:           cfg.Validation.MinSamples,
-				MinPositiveFolds:     cfg.Validation.MinPositiveFolds,
-				MinExpectedReturnPct: cfg.Validation.MinExpectedReturn,
-				PriorSamples:         cfg.Validation.PriorSamples,
+			if err := store.ValidateCompatibility(selectedStrategies, cfg.Backtest.Commission, cfg.Backtest.Slippage, ds.AllCodeMap, ds.Fundamentals, ds.Moneyflows); err != nil {
+				result.ValidationErr = err
+			} else {
+				policy := validation.Policy{
+					MinSamples:           cfg.Validation.MinSamples,
+					MinPositiveFolds:     cfg.Validation.MinPositiveFolds,
+					MinExpectedReturnPct: cfg.Validation.MinExpectedReturn,
+					PriorSamples:         cfg.Validation.PriorSamples,
+				}
+				candidatePool = validation.Annotate(candidatePool, store, policy, true)
+				watchPool = validation.Annotate(watchPool, store, policy, false)
+				result.ValidationStore = store
 			}
-			candidatePool = validation.Annotate(candidatePool, store, policy, true)
-			watchPool = validation.Annotate(watchPool, store, policy, false)
-			result.ValidationStore = store
+		}
+		if result.ValidationErr != nil {
+			candidatePool = validation.MarkUnavailable(candidatePool, result.ValidationErr.Error(), true)
+			watchPool = validation.MarkUnavailable(watchPool, result.ValidationErr.Error(), false)
 		}
 	}
 
@@ -191,6 +198,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 	result.PositionDecision = signals.ApplyPositionPolicy(candidatePool, result.MarketStatus)
 	candidatePool = validation.Allocate(candidatePool)
+	portfolioCfg := cfg.Portfolio.Normalized(cfg.Backtest.InitialCapital)
+	portfolioBudget := buildPortfolioBudget(portfolioCfg, result.PortfolioSummary, memberships, ds.LatestDate, result.PositionDecision)
+	portfolioBudget.MaxBuysPerHorizon = topN
+	allocation := signals.ApplyPortfolioBudget(candidatePool, portfolioBudget)
+	signals.ReconcilePositionDecision(&result.PositionDecision, allocation)
 	result.Signals = signals.LimitByRecommendation(candidatePool, topN)
 	watchSource := append(candidatePool, watchPool...)
 	result.Watchlist = signals.SelectWatchlist(watchSource, result.Signals, opts.WatchN)
@@ -203,6 +215,31 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		result.ForwardErr = forward.RecordWithDecision(opts.ForwardDir, forwardSignals, result.MarketStatus, 5, ds.TradingDates, result.PositionDecision)
 	}
 	return result, nil
+}
+
+func buildPortfolioBudget(cfg config.PortfolioConfig, summary *portfolio.Summary, memberships sector.MembershipStore, date string, decision signals.PositionDecision) signals.PortfolioBudget {
+	budget := signals.PortfolioBudget{
+		MaxTotalPct:       signals.DeployablePositionCap(decision, cfg.MaxTotalPositionPct),
+		MaxSinglePct:      cfg.MaxSinglePositionPct,
+		MaxSectorPct:      cfg.MaxSectorPositionPct,
+		ExistingCodePct:   make(map[string]float64),
+		ExistingSectorPct: make(map[string]float64),
+	}
+	if summary == nil || cfg.ReferenceEquity <= 0 {
+		return budget
+	}
+	for _, holding := range summary.Holdings {
+		if holding.MarketVal <= 0 {
+			continue
+		}
+		pct := holding.MarketVal / cfg.ReferenceEquity * 100
+		budget.ExistingTotalPct += pct
+		budget.ExistingCodePct[holding.Code] += pct
+		if membership, ok := memberships.PrimaryIndustry(holding.Code, date); ok {
+			budget.ExistingSectorPct[membership.SectorName] += pct
+		}
+	}
+	return budget
 }
 
 func usesFundamentals(strategiesList []strategy.Strategy) bool {
@@ -229,8 +266,12 @@ func fetchMarketRealtime(provider realtime.Provider, codeMap map[string][]data.D
 }
 
 func loadPortfolioSummary(path string, ledger *portfolio.Ledger, ds *dataset.Dataset) (*portfolio.Summary, error) {
+	barsMap := ds.AllCodeMap
+	if len(barsMap) == 0 {
+		barsMap = ds.CodeMap
+	}
 	if ledger != nil {
-		return portfolio.Analyze(ledger, ds.CodeMap, ds.StockNames), nil
+		return portfolio.Analyze(ledger, barsMap, ds.StockNames), nil
 	}
 	ledger, err := portfolio.Load(path)
 	if err != nil {
@@ -239,7 +280,7 @@ func loadPortfolioSummary(path string, ledger *portfolio.Ledger, ds *dataset.Dat
 		}
 		return nil, fmt.Errorf("加载组合失败: %w", err)
 	}
-	return portfolio.Analyze(ledger, ds.CodeMap, ds.StockNames), nil
+	return portfolio.Analyze(ledger, barsMap, ds.StockNames), nil
 }
 
 func realtimeTargets(signalsList []signals.SignalResult, watchlist []signals.SignalResult) []signals.SignalResult {

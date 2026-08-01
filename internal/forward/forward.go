@@ -237,7 +237,7 @@ func Validate(dir string, barsMap map[string][]data.DailyBar) (int, error) {
 			prevLow := bars[signalIdx].TradeLow()
 			row["next_open"] = fmt.Sprintf("%.2f", open)
 			row["next_close"] = fmt.Sprintf("%.2f", close)
-			if bars[targetIdx].IsLimitUpOpen() {
+			if bars[targetIdx].IsLimitUpOpenWithFallback(prevClose) {
 				row["status"] = "no_trade_limit_up"
 				appendNote(row, "目标日开盘涨停，无法按计划买入")
 			} else if prevClose > 0 && open > prevClose*1.03 {
@@ -247,8 +247,7 @@ func Validate(dir string, barsMap map[string][]data.DailyBar) (int, error) {
 				row["next_return_pct"] = fmt.Sprintf("%.2f", returnPct(open, close))
 				row["status"] = "validated_1d"
 				if prevLow > 0 && bars[targetIdx].TradeLow() < prevLow {
-					row["status"] = "invalid_break_prev_low"
-					appendNote(row, "盘中跌破前一交易日低点")
+					appendNote(row, "盘中跌破前一交易日低点（已按开盘成交，保留收益）")
 				}
 			}
 			updated++
@@ -537,7 +536,7 @@ func writeDailyMarkdown(dir, signalDate, targetDate string, picks []signal.Signa
 	fmt.Fprintln(f)
 	fmt.Fprintln(f, "- 回填次日开盘价、收盘价和次日收益。")
 	fmt.Fprintln(f, "- 回填 3 日和 5 日收盘收益。")
-	fmt.Fprintln(f, "- 高开超过 3% 或跌破前一交易日低点时标记为未触发/失效。")
+	fmt.Fprintln(f, "- 高开超过 3% 时视为未成交；开盘成交后若盘中跌破前一交易日低点，只记录风险并保留后续收益。")
 	return nil
 }
 

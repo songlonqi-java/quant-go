@@ -22,7 +22,7 @@ import (
 	"quant/internal/strategy"
 )
 
-const formatVersion = 1
+const formatVersion = 2
 
 type Policy struct {
 	MinSamples           int
@@ -69,16 +69,19 @@ type Stats struct {
 }
 
 type Store struct {
-	Version        int              `json:"version"`
-	BuiltAt        string           `json:"built_at"`
-	StartDate      string           `json:"start_date"`
-	EndDate        string           `json:"end_date"`
-	Folds          []Fold           `json:"folds"`
-	Stats          map[string]Stats `json:"stats"`
-	ScannedSignals int              `json:"scanned_signals"`
-	FeasibleTrades int              `json:"feasible_trades"`
-	SkippedTrades  int              `json:"skipped_trades"`
-	Limitations    []string         `json:"limitations"`
+	Version             int              `json:"version"`
+	BuiltAt             string           `json:"built_at"`
+	StartDate           string           `json:"start_date"`
+	EndDate             string           `json:"end_date"`
+	StrategyFingerprint string           `json:"strategy_fingerprint"`
+	DataFingerprint     string           `json:"data_fingerprint"`
+	BuildFingerprint    string           `json:"build_fingerprint"`
+	Folds               []Fold           `json:"folds"`
+	Stats               map[string]Stats `json:"stats"`
+	ScannedSignals      int              `json:"scanned_signals"`
+	FeasibleTrades      int              `json:"feasible_trades"`
+	SkippedTrades       int              `json:"skipped_trades"`
+	Limitations         []string         `json:"limitations"`
 }
 
 type replaySignal struct {
@@ -179,14 +182,22 @@ func Build(opts BuildOptions) (*Store, error) {
 		}
 	}
 
+	strategyFingerprint, err := StrategyFingerprint(opts.Strategies, opts.Commission, opts.Slippage)
+	if err != nil {
+		return nil, err
+	}
+	dataFingerprint := fingerprintData(opts.CodeMap, opts.Fundamentals, opts.Moneyflows)
 	accumulators := make(map[string]*accumulator)
 	store := &Store{
-		Version:   formatVersion,
-		BuiltAt:   time.Now().Format(time.RFC3339),
-		StartDate: dates[0],
-		EndDate:   dates[len(dates)-1],
-		Folds:     folds,
-		Stats:     make(map[string]Stats),
+		Version:             formatVersion,
+		BuiltAt:             time.Now().Format(time.RFC3339),
+		StartDate:           dates[0],
+		EndDate:             dates[len(dates)-1],
+		StrategyFingerprint: strategyFingerprint,
+		DataFingerprint:     dataFingerprint,
+		BuildFingerprint:    fingerprintBuild(strategyFingerprint, dataFingerprint, dates[0], dates[len(dates)-1], len(folds)),
+		Folds:               folds,
+		Stats:               make(map[string]Stats),
 		Limitations: []string{
 			"历史回放按信号日后首个可交易开盘价入场，使用真实价、手续费和滑点。",
 			"样本外统计采用后半段历史的时间顺序分段；策略参数在回放前固定。",
@@ -368,13 +379,10 @@ func feasibleReturn(bars []data.DailyBar, signalIdx int, horizon strategy.Horizo
 	signalBar := bars[signalIdx]
 	entryBar := bars[entryIdx]
 	entry := entryBar.TradeOpen()
-	if entry <= 0 || entryBar.Vol <= 0 || entryBar.IsLimitUpOpen() {
+	if entry <= 0 || entryBar.Vol <= 0 || entryBar.IsLimitUpOpenWithFallback(signalBar.TradeClose()) {
 		return 0, false
 	}
 	if prevClose := signalBar.TradeClose(); prevClose > 0 && entry > prevClose*1.03 {
-		return 0, false
-	}
-	if prevLow := signalBar.TradeLow(); prevLow > 0 && entryBar.TradeLow() < prevLow {
 		return 0, false
 	}
 	exit := bars[exitIdx].TradeClose()
@@ -548,6 +556,27 @@ func Annotate(results []signal.SignalResult, store *Store, policy Policy, enforc
 			evidence.Status = "历史验证不足"
 		}
 		results[i].HistoricalEvidence = evidence
+	}
+	return results
+}
+
+// MarkUnavailable attaches an explicit failed evidence result. When enforcement
+// is enabled this keeps formal recommendations fail-closed if the evidence file
+// is missing, stale, or incompatible with the running strategy configuration.
+func MarkUnavailable(results []signal.SignalResult, status string, enforce bool) []signal.SignalResult {
+	if status == "" {
+		status = "历史验证不可用"
+	}
+	for i := range results {
+		if results[i].BuyCount <= results[i].SellCount || results[i].TotalScore <= 0 {
+			continue
+		}
+		results[i].HistoricalEvidence = &signal.HistoricalEvidence{
+			Available: false,
+			Eligible:  false,
+			Enforced:  enforce,
+			Status:    status,
+		}
 	}
 	return results
 }

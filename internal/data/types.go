@@ -1,5 +1,7 @@
 package data
 
+import "strings"
+
 type DailyBar struct {
 	TsCode    string  `parquet:"ts_code"`
 	TradeDate string  `parquet:"trade_date"`
@@ -245,6 +247,66 @@ func (b DailyBar) IsLimitUpOpen() bool {
 
 func (b DailyBar) IsLimitDownOpen() bool {
 	return b.IsLimitDownPrice(b.TradeOpen())
+}
+
+// DefaultLimitThresholdPct returns a conservative fallback threshold used only
+// when exact daily limit prices are unavailable. The small tolerance keeps
+// rounded exchange prices from being missed.
+func DefaultLimitThresholdPct(code string) float64 {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	switch {
+	case strings.HasSuffix(code, ".BJ"):
+		return 0.295
+	case strings.HasPrefix(code, "300"), strings.HasPrefix(code, "301"),
+		strings.HasPrefix(code, "688"), strings.HasPrefix(code, "689"):
+		return 0.195
+	default:
+		return 0.095
+	}
+}
+
+func IsApproxLimitUp(code string, price, prevClose float64) bool {
+	return IsApproxLimitUpWithThreshold(price, prevClose, DefaultLimitThresholdPct(code))
+}
+
+func IsApproxLimitDown(code string, price, prevClose float64) bool {
+	return IsApproxLimitDownWithThreshold(price, prevClose, DefaultLimitThresholdPct(code))
+}
+
+func IsApproxLimitUpWithThreshold(price, prevClose, threshold float64) bool {
+	return price > 0 && prevClose > 0 && threshold > 0 && price >= prevClose*(1+threshold)
+}
+
+func IsApproxLimitDownWithThreshold(price, prevClose, threshold float64) bool {
+	return price > 0 && prevClose > 0 && threshold > 0 && price <= prevClose*(1-threshold)
+}
+
+func (b DailyBar) IsLimitUpOpenWithFallback(prevClose float64) bool {
+	if b.UpLimit > 0 {
+		return b.IsLimitUpOpen()
+	}
+	return IsApproxLimitUp(b.TsCode, b.TradeOpen(), prevClose)
+}
+
+func (b DailyBar) IsLimitDownOpenWithFallback(prevClose float64) bool {
+	if b.DownLimit > 0 {
+		return b.IsLimitDownOpen()
+	}
+	return IsApproxLimitDown(b.TsCode, b.TradeOpen(), prevClose)
+}
+
+func (b DailyBar) IsLimitUpCloseWithFallback(prevClose float64) bool {
+	if b.UpLimit > 0 {
+		return b.IsLimitUpClose()
+	}
+	return IsApproxLimitUp(b.TsCode, b.TradeClose(), prevClose)
+}
+
+func (b DailyBar) IsLimitDownCloseWithFallback(prevClose float64) bool {
+	if b.DownLimit > 0 {
+		return b.IsLimitDownClose()
+	}
+	return IsApproxLimitDown(b.TsCode, b.TradeClose(), prevClose)
 }
 
 type NewsItem struct {

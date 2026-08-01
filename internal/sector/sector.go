@@ -422,17 +422,11 @@ func avgClose(bars []data.DailyBar, idx, period int) float64 {
 }
 
 func isLimitUp(bar data.DailyBar, prevClose float64) bool {
-	if bar.IsLimitUpClose() {
-		return true
-	}
-	return prevClose > 0 && bar.TradeClose() >= prevClose*1.095
+	return bar.IsLimitUpCloseWithFallback(prevClose)
 }
 
 func isLimitDown(bar data.DailyBar, prevClose float64) bool {
-	if bar.IsLimitDownClose() {
-		return true
-	}
-	return prevClose > 0 && bar.TradeClose() <= prevClose*0.905
+	return bar.IsLimitDownCloseWithFallback(prevClose)
 }
 
 func indexByDate(bars []data.DailyBar) map[string]int {

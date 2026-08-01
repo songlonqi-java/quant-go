@@ -10,27 +10,34 @@ import (
 
 func (c *Client) FetchStockList(ctx context.Context) ([]StockInfo, error) {
 	fields := "ts_code,symbol,name,market,industry,list_date,delist_date"
-	params := map[string]interface{}{
-		"list_status": "L",
+	byCode := make(map[string]StockInfo)
+	for _, status := range []string{"L", "D", "P"} {
+		params := map[string]interface{}{"list_status": status}
+		fieldList, items, err := c.CallOnce(ctx, "stock_basic", params, fields)
+		if err != nil {
+			return nil, fmt.Errorf("获取%s状态股票列表: %w", status, err)
+		}
+		idx := indexMap(fieldList)
+		for _, item := range items {
+			stock := StockInfo{
+				TsCode:     getStr(item, idx, "ts_code"),
+				Symbol:     getStr(item, idx, "symbol"),
+				Name:       getStr(item, idx, "name"),
+				Market:     getStr(item, idx, "market"),
+				Industry:   getStr(item, idx, "industry"),
+				ListDate:   getStr(item, idx, "list_date"),
+				DelistDate: getStr(item, idx, "delist_date"),
+			}
+			if stock.TsCode != "" {
+				byCode[stock.TsCode] = stock
+			}
+		}
 	}
-	fieldList, items, err := c.CallOnce(ctx, "stock_basic", params, fields)
-	if err != nil {
-		return nil, err
+	stocks := make([]StockInfo, 0, len(byCode))
+	for _, stock := range byCode {
+		stocks = append(stocks, stock)
 	}
-
-	idx := indexMap(fieldList)
-	var stocks []StockInfo
-	for _, item := range items {
-		stocks = append(stocks, StockInfo{
-			TsCode:     getStr(item, idx, "ts_code"),
-			Symbol:     getStr(item, idx, "symbol"),
-			Name:       getStr(item, idx, "name"),
-			Market:     getStr(item, idx, "market"),
-			Industry:   getStr(item, idx, "industry"),
-			ListDate:   getStr(item, idx, "list_date"),
-			DelistDate: getStr(item, idx, "delist_date"),
-		})
-	}
+	sort.Slice(stocks, func(i, j int) bool { return stocks[i].TsCode < stocks[j].TsCode })
 	return stocks, nil
 }
 

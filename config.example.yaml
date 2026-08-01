@@ -43,6 +43,14 @@ signal:
     - trend_pullback
   top_n: 20
 
+# 组合级风险预算。reference_equity 是账户总权益（现金+持仓），用于把
+# portfolio.yaml 中已有持仓折算成仓位；实盘资金变化后应同步调整。
+portfolio:
+  reference_equity: 100000.0
+  max_total_position_pct: 70
+  max_single_position_pct: 15
+  max_sector_position_pct: 25
+
 # 正式买入候选需要有历史样本外证据。先运行
 # ./go-quant validate build
 # 生成 data/raw/validation/evidence.json。

@@ -322,7 +322,10 @@ func boundedContribution(score float64) float64 {
 	if math.IsNaN(score) || math.IsInf(score, 0) {
 		return 1
 	}
-	score = math.Max(-30, math.Min(30, score))
+	// Score implementations historically mixed signed bullishness and unsigned
+	// setup quality. Once a strategy emits BUY or SELL, the signal supplies the
+	// direction and score magnitude supplies confidence.
+	score = math.Min(30, math.Abs(score))
 	contribution := 1 + score*0.01
 	if contribution < 0.5 {
 		return 0.5
@@ -367,10 +370,11 @@ func applyMarketAdjustment(score float64, marketStatus *market.MarketStatus) flo
 }
 
 func confidenceScore(r SignalResult) float64 {
-	conf := 45 + r.TotalScore*10 + float64(r.BuyCount-r.SellCount)*3
-	if r.SellCount > 0 {
-		conf -= float64(r.SellCount) * 15
+	dominant, opposing := r.BuyCount, r.SellCount
+	if r.TotalScore < 0 {
+		dominant, opposing = r.SellCount, r.BuyCount
 	}
+	conf := 45 + math.Abs(r.TotalScore)*10 + float64(dominant-opposing)*3 - float64(opposing)*15
 	if conf < 0 {
 		return 0
 	}
@@ -475,12 +479,16 @@ func applyMoneyflowContext(r *SignalResult, moneyflowStore *data.MoneyflowStore)
 }
 
 func ApplySectorContext(results []SignalResult, report *sector.Report, memberships sector.MembershipStore) {
-	if report == nil || memberships.Len() == 0 {
+	if memberships.Len() == 0 {
 		return
 	}
 	for i := range results {
 		membership, ok := memberships.PrimaryIndustry(results[i].Code, results[i].Date)
 		if !ok {
+			continue
+		}
+		results[i].SectorName = membership.SectorName
+		if report == nil {
 			continue
 		}
 		row, ok := report.Find(membership.SectorType, membership.SectorCode)

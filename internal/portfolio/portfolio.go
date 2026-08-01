@@ -48,13 +48,14 @@ type ClosedTrade struct {
 }
 
 type Summary struct {
-	Holdings      []PositionStatus
-	ClosedTrades  []ClosedTrade
-	TotalRealized float64
-	WinCount      int
-	LossCount     int
-	WinRate       float64
-	AvgReturn     float64
+	Holdings         []PositionStatus
+	ClosedTrades     []ClosedTrade
+	TotalMarketValue float64
+	TotalRealized    float64
+	WinCount         int
+	LossCount        int
+	WinRate          float64
+	AvgReturn        float64
 }
 
 type PositionStatus struct {
@@ -183,7 +184,7 @@ func Analyze(ledger *Ledger, barsMap map[string][]data.DailyBar, names map[strin
 			sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
 			lastPrice = bars[len(bars)-1].TradeClose()
 		}
-		s.Holdings = append(s.Holdings, PositionStatus{
+		position := PositionStatus{
 			Code:      h.Code,
 			Name:      name,
 			Shares:    h.Shares,
@@ -192,7 +193,9 @@ func Analyze(ledger *Ledger, barsMap map[string][]data.DailyBar, names map[strin
 			MarketVal: lastPrice * h.Shares,
 			PnL:       (lastPrice - h.AvgCost) * h.Shares,
 			PnLPct:    (lastPrice/h.AvgCost - 1) * 100,
-		})
+		}
+		s.Holdings = append(s.Holdings, position)
+		s.TotalMarketValue += position.MarketVal
 	}
 
 	s.ClosedTrades = ledger.ClosedTrades()
@@ -230,6 +233,10 @@ func ApplyRealtimeQuotes(s *Summary, quotes map[string]realtime.Quote) {
 		if h.Cost > 0 {
 			h.PnLPct = (h.LastPrice/h.Cost - 1) * 100
 		}
+	}
+	s.TotalMarketValue = 0
+	for _, h := range s.Holdings {
+		s.TotalMarketValue += h.MarketVal
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 	"quant/internal/strategy"
 )
 
-func TestValidateStopsAfterInvalidBreakPrevLow(t *testing.T) {
+func TestValidateKeepsOpenTradeAfterIntradayBreakPrevLow(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, picksFile)
 	if err := writeRows(path, []map[string]string{
@@ -40,8 +40,8 @@ func TestValidateStopsAfterInvalidBreakPrevLow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if updated != 1 {
-		t.Fatalf("updated = %d, want 1", updated)
+	if updated != 3 {
+		t.Fatalf("updated = %d, want 3", updated)
 	}
 
 	rows, err := readRows(path)
@@ -49,11 +49,14 @@ func TestValidateStopsAfterInvalidBreakPrevLow(t *testing.T) {
 		t.Fatalf("readRows() error = %v", err)
 	}
 	row := rows[0]
-	if row["status"] != "invalid_break_prev_low" {
-		t.Fatalf("status = %q, want invalid_break_prev_low", row["status"])
+	if row["status"] != "validated_5d" {
+		t.Fatalf("status = %q, want validated_5d", row["status"])
 	}
-	if row["day3_close"] != "" || row["day5_close"] != "" {
-		t.Fatalf("invalid trade should not have day3/day5 returns: row=%v", row)
+	if row["next_return_pct"] == "" || row["day3_close"] == "" || row["day5_close"] == "" {
+		t.Fatalf("open trade should retain all returns after intraday weakness: row=%v", row)
+	}
+	if row["notes"] == "" {
+		t.Fatalf("intraday break should remain visible as a risk note: row=%v", row)
 	}
 }
 

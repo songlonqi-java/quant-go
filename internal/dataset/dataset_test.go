@@ -45,6 +45,9 @@ func TestLoadFiltersLatestAndST(t *testing.T) {
 	if _, ok := ds.CodeMap["000001.SZ"]; !ok {
 		t.Fatalf("remaining codes = %v, want 000001.SZ", ds.CodeMap)
 	}
+	if len(ds.AllCodeMap) != 3 || ds.AllCodeMap["000002.SZ"] == nil || ds.AllCodeMap["000003.SZ"] == nil {
+		t.Fatalf("AllCodeMap = %v, want stale and ST securities retained for monitoring", ds.AllCodeMap)
+	}
 }
 
 func TestFilterByMarketCapAndActiveBarsUseSameUniverse(t *testing.T) {

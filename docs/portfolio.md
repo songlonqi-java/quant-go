@@ -41,6 +41,20 @@ transactions:
 - **已平仓交易**：每笔卖出按 FIFO 匹配买入，计算单笔收益率和盈亏
 - **历史统计**：胜率、累计已实现盈亏
 
+## 组合风险配置
+
+`signal` 会先把当前持仓市值折算成账户仓位，再分配新的买入建议。账户总权益和默认风险上限在 `config.yaml` 中配置：
+
+```yaml
+portfolio:
+  reference_equity: 100000.0  # 现金 + 持仓的账户总权益
+  max_total_position_pct: 70
+  max_single_position_pct: 15
+  max_sector_position_pct: 25
+```
+
+`reference_equity` 不是初始买入成本，也不是仅持仓市值；资金出入或账户权益明显变化后需要同步更新。已有持仓已经超过某项上限时，系统不会自动卖出，但会停止给该组合、股票或行业继续分配新仓位。
+
 ## 日常操作
 
 ### 买入时

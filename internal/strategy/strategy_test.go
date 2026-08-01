@@ -114,6 +114,18 @@ func TestLimitUpSellsOnlyAfterConfirmedEntry(t *testing.T) {
 	}
 }
 
+func TestLimitUpUsesDirectionalExactPriceWithoutRequiringDownLimit(t *testing.T) {
+	bars := []data.DailyBar{
+		strategyBar("20260101", 10, 10, 10, 10),
+		strategyBar("20260102", 11, 11, 10.5, 11),
+	}
+	bars[1].UpLimit = 12
+	bars[1].DownLimit = 0
+	if NewLimitUp(9.5, 1.2).isLimitUpDay(bars, 1) {
+		t.Fatal("exact up-limit price must override generic 10% fallback even when down-limit is missing")
+	}
+}
+
 func TestMACDUsesRecursiveEMA(t *testing.T) {
 	bars := []data.DailyBar{
 		strategyBar("20260101", 10, 10, 10, 10),
