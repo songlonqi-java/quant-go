@@ -225,7 +225,7 @@ func TestServerCreatesAndRendersDailyReport(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodGet, "/tasks/"+strconv.FormatInt(task.ID, 10), nil)
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("page status = %d, body = %s", response.Code, response.Body.String())
 	}

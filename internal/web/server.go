@@ -113,6 +113,10 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 	server.runner = newTaskRunner(store, execute)
 	server.mux = http.NewServeMux()
 	server.mux.HandleFunc("GET /healthz", server.handleHealth)
+	server.mux.HandleFunc("GET /login", server.handleLoginPage)
+	server.mux.HandleFunc("POST /login", server.handleLogin)
+	server.mux.HandleFunc("GET /register", server.handleRegisterPage)
+	server.mux.HandleFunc("POST /register", server.handleRegister)
 	server.mux.HandleFunc("POST /tasks/daily", server.handleCreateDaily)
 	server.mux.HandleFunc("POST /tasks/value-monthly", server.handleCreateValueMonthly)
 	server.mux.HandleFunc("POST /tasks/value-quarterly", server.handleCreateValueQuarterly)
@@ -501,7 +505,7 @@ func redirectAIError(w http.ResponseWriter, r *http.Request, reportID int64, err
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	s.serveAuthenticated(w, r)
 }
 
 func (s *Server) Close() error {

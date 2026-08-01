@@ -252,6 +252,26 @@ var schemaMigrations = []schemaMigration{
 			ALTER TABLE web_ai_answers ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0;
 		`,
 	},
+	{
+		version: 8,
+		name:    "web users and sessions",
+		sql: `
+			CREATE TABLE IF NOT EXISTS web_users (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+				password_hash TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS web_sessions (
+				token_hash TEXT PRIMARY KEY,
+				user_id INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				expires_at INTEGER NOT NULL,
+				FOREIGN KEY(user_id) REFERENCES web_users(id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_web_sessions_expires_at ON web_sessions(expires_at);
+		`,
+	},
 }
 
 func openTaskStore(path string) (*taskStore, error) {

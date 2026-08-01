@@ -153,7 +153,7 @@ func TestPortfolioHTTPCreateRequiresCSRFAndRendersPage(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/portfolio/transactions", strings.NewReader(values.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("missing csrf status=%d", response.Code)
 	}
@@ -162,14 +162,14 @@ func TestPortfolioHTTPCreateRequiresCSRFAndRendersPage(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "/portfolio/transactions", strings.NewReader(values.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response = httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/portfolio?status=created" {
 		t.Fatalf("create status=%d location=%q body=%s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/portfolio", nil)
 	response = httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "000001.SZ") || !strings.Contains(response.Body.String(), "当前持仓") {
 		t.Fatalf("portfolio page status=%d body=%s", response.Code, response.Body.String())
 	}

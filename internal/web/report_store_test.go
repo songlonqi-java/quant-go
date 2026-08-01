@@ -160,7 +160,7 @@ func TestReportCenterRendersListAndDetail(t *testing.T) {
 	for _, path := range []string{"/reports", "/reports/" + strconv.FormatInt(reports[0].ID, 10)} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()
-		server.ServeHTTP(response, request)
+		server.mux.ServeHTTP(response, request)
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "20260731") {
 			t.Fatalf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
 		}
@@ -220,7 +220,7 @@ func TestValueTaskRendersDedicatedReport(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodGet, "/tasks/"+strconv.FormatInt(task.ID, 10), nil)
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "月度价值筛选") || !strings.Contains(response.Body.String(), "候选池只用于跟踪") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -251,7 +251,7 @@ func TestOperationalTaskResultIsNotIndexedAsAnalysisReport(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodGet, "/tasks/"+strconv.FormatInt(task.ID, 10), nil)
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "备份产物") || strings.Contains(response.Body.String(), "日报（") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -284,7 +284,7 @@ func TestReportAIQuestionPersistsUsageAndScopedPrompt(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/reports/"+strconv.FormatInt(reports[0].ID, 10)+"/ask", strings.NewReader(values.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}

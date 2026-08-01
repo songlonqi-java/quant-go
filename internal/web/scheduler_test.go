@@ -55,13 +55,13 @@ func TestSchedulePageUpdatesPersistedConfiguration(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/schedules/value_monthly", strings.NewReader(values.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("update status=%d body=%s", response.Code, response.Body.String())
 	}
 	request = httptest.NewRequest(http.MethodGet, "/schedules", nil)
 	response = httptest.NewRecorder()
-	server.ServeHTTP(response, request)
+	server.mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "本地定时任务") || !strings.Contains(response.Body.String(), "value_monthly") {
 		t.Fatalf("page status=%d body=%s", response.Code, response.Body.String())
 	}
