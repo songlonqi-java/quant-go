@@ -27,6 +27,7 @@ type PositionDecision struct {
 }
 
 func ApplyPositionPolicy(results []SignalResult, marketStatus *market.MarketStatus) PositionDecision {
+	ApplyRiskPolicy(results)
 	decision := EvaluatePositionPolicy(results, marketStatus)
 	suppressAllBuys := decision.Action == PositionActionCash || decision.Action == PositionActionWatch
 
@@ -50,6 +51,7 @@ func ApplyPositionPolicy(results []SignalResult, marketStatus *market.MarketStat
 			addUnique(&results[i].RiskLabels, "轻仓试错")
 		}
 	}
+	RefreshRiskPolicy(results)
 
 	return decision
 }
@@ -134,7 +136,15 @@ func qualifyingBuyIssues(r SignalResult) []string {
 	if r.SellCount > 0 {
 		issues = append(issues, "有卖出冲突")
 	}
-	if r.BuyCount < minBuySignals(r.Horizon) {
+	if r.VoteMetricsApplied {
+		requiredGroups, requiredVotes := requiredIndependentConsensus(r.Horizon)
+		if r.BuyGroupCount < requiredGroups {
+			issues = append(issues, fmt.Sprintf("独立策略组不足(%d/%d)", r.BuyGroupCount, requiredGroups))
+		}
+		if r.EffectiveBuyVotes+1e-9 < requiredVotes {
+			issues = append(issues, fmt.Sprintf("相关性调整后买入票数不足(%.2f/%.2f)", r.EffectiveBuyVotes, requiredVotes))
+		}
+	} else if r.BuyCount < minBuySignals(r.Horizon) {
 		issues = append(issues, "买入信号不足")
 	}
 	if r.Confidence < 70 {
@@ -143,12 +153,10 @@ func qualifyingBuyIssues(r SignalResult) []string {
 	if r.HistoricalEvidence != nil && r.HistoricalEvidence.Enforced && !r.HistoricalEvidence.Eligible {
 		issues = append(issues, "历史验证不通过")
 	}
-	for _, label := range append(append([]string{}, r.RiskLabels...), r.IntradayLabels...) {
-		switch label {
-		case "涨停风险", "跌停风险", "高开>3%", "涨幅偏高", "盘中走弱", "资金背离", "亏钱效应", "跌停扩散", "涨停退潮":
-			issues = append(issues, label)
-		}
+	if r.LiquidityApplied && !r.LiquidityEligible {
+		issues = append(issues, "流动性资格不通过")
 	}
+	issues = append(issues, hardRiskIssues(r)...)
 	return uniqueStrings(issues)
 }
 

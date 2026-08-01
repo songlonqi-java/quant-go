@@ -23,6 +23,7 @@ import (
 	quantai "quant/internal/ai"
 	"quant/internal/config"
 	"quant/internal/portfolio"
+	"quant/internal/signal"
 	"quant/internal/strategy"
 	"quant/internal/value"
 	"quant/internal/workflow/daily"
@@ -849,15 +850,19 @@ type taskPageData struct {
 
 func renderPage(w http.ResponseWriter, body string, data any) {
 	t, err := template.New("page").Funcs(template.FuncMap{
-		"shortTime":     shortTime,
-		"pct":           func(v float64) string { return fmt.Sprintf("%+.2f%%", v) },
-		"coverage":      func(v float64) string { return fmt.Sprintf("%.1f%%", v*100) },
-		"join":          strings.Join,
-		"kindLabel":     taskKindLabel,
-		"stockCode":     displayStockCode,
-		"horizonLabel":  strategy.HorizonLabel,
-		"sectorRisers":  risingSectors,
-		"sectorFallers": fallingSectors,
+		"shortTime":       shortTime,
+		"pct":             func(v float64) string { return fmt.Sprintf("%+.2f%%", v) },
+		"coverage":        func(v float64) string { return fmt.Sprintf("%.1f%%", v*100) },
+		"join":            strings.Join,
+		"kindLabel":       taskKindLabel,
+		"stockCode":       displayStockCode,
+		"horizonLabel":    strategy.HorizonLabel,
+		"buyConsensus":    displayBuyConsensus,
+		"historyEvidence": displayHistoricalEvidence,
+		"riskExecution":   signal.RiskPolicySummary,
+		"liquidity":       signal.LiquiditySummary,
+		"sectorRisers":    risingSectors,
+		"sectorFallers":   fallingSectors,
 	}).Parse(pageTemplate + body)
 	if err != nil {
 		http.Error(w, "页面模板错误", http.StatusInternalServerError)
@@ -888,6 +893,39 @@ func displayStockCode(value string) string {
 		return value[:separator]
 	}
 	return value
+}
+
+func displayBuyConsensus(result signal.SignalResult) string {
+	if !result.VoteMetricsApplied {
+		return "旧报告未记录"
+	}
+	return fmt.Sprintf("%.2f / %d组", result.EffectiveBuyVotes, result.BuyGroupCount)
+}
+
+func displayHistoricalEvidence(result signal.SignalResult) string {
+	evidence := result.HistoricalEvidence
+	if evidence == nil {
+		return "-"
+	}
+	if !evidence.Available {
+		if evidence.Status != "" {
+			return evidence.Status
+		}
+		return "不可用"
+	}
+	parts := []string{
+		evidence.Basis,
+		fmt.Sprintf("%d日 / %d交易", evidence.Samples, evidence.Trades),
+		fmt.Sprintf("期望%+.2f%%", evidence.ExpectedReturnPct),
+	}
+	if evidence.PriorBasis != "" {
+		parts = append(parts, fmt.Sprintf("先验%s(%d日/权重%.0f)",
+			evidence.PriorBasis, evidence.PriorSamples, evidence.PriorWeight))
+	}
+	if evidence.Status != "" {
+		parts = append(parts, evidence.Status)
+	}
+	return strings.Join(parts, " · ")
 }
 
 const pageTemplate = `{{define "page"}}<!doctype html>
@@ -950,8 +988,8 @@ const taskTemplate = `{{define "body"}}
 {{with .Task.Result}}{{with .Backup}}<section class="card"><h2>备份产物</h2><p><strong>{{.Path}}</strong></p><p>文件 {{.Files}} 个 · 大小 {{.Size}} bytes · 创建于 {{shortTime .CreatedAt.String}}</p></section>{{end}}{{with .ValuePreparation}}{{with .Readiness}}<section class="card"><h2>慢频数据准备结果</h2><p>数据日期 {{.TradeDate}}，股票 {{.Stocks}}；估值覆盖 {{coverage .DailyBasicCoverage}}，财务覆盖 {{coverage .FinancialCoverage}}，行业覆盖 {{coverage .SectorCoverage}}。</p>{{range .Issues}}<div class="warn">{{.}}</div>{{end}}{{if .Ready}}<p class="success">慢频价值输入已就绪。</p>{{end}}</section>{{end}}{{end}}{{end}}
 {{with .Task.Report}}{{with .ValueMonthly}}<section class="card"><h2>月度价值筛选（{{.ScreenDate}}）</h2><p>扫描 {{.Scanned}} 只，符合规则 {{.Qualified}} 只；规则 {{.Policy.Version}}。候选池只用于跟踪，不等同于立即买入。</p>{{if .Candidates}}<table><thead><tr><th>股票</th><th>行业</th><th>估值口径</th><th>折价</th><th>ROE</th><th>利润增速</th><th>营收增速</th><th>评分</th></tr></thead><tbody>{{range .Candidates}}<tr><td>{{stockCode .Code}} {{.Name}}</td><td>{{.Industry}}</td><td>{{.ValuationBasis}}</td><td>{{pct .DiscountPct}}</td><td>{{pct .ROE}}</td><td>{{pct .ProfitGrowth}}</td><td>{{pct .RevenueGrowth}}</td><td>{{printf "%.1f" .Score}}</td></tr>{{end}}</tbody></table>{{else}}<p>无候选，不因数量不足放宽规则。</p>{{end}}</section>{{else}}{{with .ValueQuarterly}}<section class="card"><h2>季度价值复核（{{.ReviewDate}}）</h2><p class="muted">来源月度快照：{{.SourceSnapshot}}</p>{{if .Items}}<table><thead><tr><th>股票</th><th>行业</th><th>决定</th><th>折价</th><th>ROE</th><th>说明</th></tr></thead><tbody>{{range .Items}}<tr><td>{{stockCode .Code}} {{.Name}}</td><td>{{.Industry}}</td><td>{{.Decision}}</td><td>{{pct .DiscountPct}}</td><td>{{pct .ROE}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table>{{else}}<p>无复核对象。</p>{{end}}</section>{{else}}<section class="card"><h2>日报（{{.TradeDate}}）</h2><p class="muted">目标日期 {{.TargetDate}} · 生成于 {{shortTime .GeneratedAt.String}}</p>{{if .Warnings}}{{range .Warnings}}<div class="warn">{{.}}</div>{{end}}{{end}}
 <div class="grid"><div><span class="muted">仓位策略</span><div class="value">{{.Position.Action}}</div><div>{{.Position.Advice}}</div></div>{{with .Market}}<div><span class="muted">{{stockCode .IndexCode}}</span><div class="value">{{printf "%.2f" .IndexClose}} <small>{{pct .IndexChg}}</small></div><div>{{.MATrend}} · 赚钱效应 {{printf "%.1f%%" .ProfitEffect}}</div></div>{{end}}{{with .Intraday}}<div><span class="muted">盘中快照</span><div class="value">{{printf "%.1f%%" .CoveragePct}}</div><div>上涨 {{.RisingCount}} / 下跌 {{.FallingCount}} · {{if .Complete}}覆盖完整{{else}}仅供参考{{end}}</div></div>{{end}}</div>
-<h2>正式推荐买入</h2>{{if $.CanRecommend}}{{if .Recommendations}}<table><thead><tr><th>周期</th><th>股票</th><th>建议</th><th>置信度</th><th>建议仓位</th><th>理由</th></tr></thead><tbody>{{range .Recommendations}}<tr><td>{{horizonLabel .Horizon}}</td><td>{{stockCode .Code}} {{.Name}}</td><td>{{.Recommendation}}</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{printf "%.1f%%" .PositionPct}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}{{else}}<p>无（当前仓位策略为 {{.Position.Action}}，不强行推荐买入。）</p>{{end}}
-<h2>观察机会</h2>{{if .Watchlist}}<table><thead><tr><th>周期</th><th>股票</th><th>状态</th><th>置信度</th><th>观察理由</th></tr></thead><tbody>{{range .Watchlist}}<tr><td>{{horizonLabel .Horizon}}</td><td>{{stockCode .Code}} {{.Name}}</td><td>可跟踪 / 等待确认</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}
+<h2>正式推荐买入</h2>{{if $.CanRecommend}}{{if .Recommendations}}<table><thead><tr><th>周期</th><th>股票</th><th>建议</th><th>有效票/组</th><th>置信度</th><th>建议仓位</th><th>流动性</th><th>历史证据</th><th>风险执行</th><th>理由</th></tr></thead><tbody>{{range .Recommendations}}<tr><td>{{horizonLabel .Horizon}}</td><td>{{stockCode .Code}} {{.Name}}</td><td>{{.Recommendation}}</td><td>{{buyConsensus .}}</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{printf "%.1f%%" .PositionPct}}</td><td>{{liquidity .}}</td><td>{{historyEvidence .}}</td><td>{{riskExecution .}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}{{else}}<p>无（当前仓位策略为 {{.Position.Action}}，不强行推荐买入。）</p>{{end}}
+<h2>观察机会</h2>{{if .Watchlist}}<table><thead><tr><th>周期</th><th>股票</th><th>状态</th><th>有效票/组</th><th>置信度</th><th>流动性</th><th>历史证据</th><th>风险执行</th><th>观察理由</th></tr></thead><tbody>{{range .Watchlist}}<tr><td>{{horizonLabel .Horizon}}</td><td>{{stockCode .Code}} {{.Name}}</td><td>可跟踪 / 等待确认</td><td>{{buyConsensus .}}</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{liquidity .}}</td><td>{{historyEvidence .}}</td><td>{{riskExecution .}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}
 {{if .Holdings}}<h2>持仓</h2><table><thead><tr><th>股票</th><th>股数</th><th>成本</th><th>现价</th><th>浮动盈亏</th></tr></thead><tbody>{{range .Holdings}}<tr><td>{{stockCode .Code}} {{.Name}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.2f" .Cost}}</td><td>{{printf "%.2f" .LastPrice}}</td><td>{{pct .PnLPct}}</td></tr>{{end}}</tbody></table>{{end}}
 {{if .News}}<h2>新闻热度</h2><p>近 7 日新闻 {{.News.TotalNews}} 条。{{range .News.HotTopics}}<span class="tag">{{.Keyword}} ×{{.Count}}</span> {{end}}</p><p><strong>近 2 日热点：</strong>{{if .News.RecentNews}}共 {{.News.RecentNews}} 条新闻。{{range .News.RecentHotTopics}}<span class="tag">{{.Keyword}} ×{{.Count}}</span> {{end}}{{if not .News.RecentHotTopics}}暂未形成重复热点词。{{end}}{{else}}暂无近 2 日新闻。{{end}}</p>{{end}}
 {{if .Sectors}}<h2>板块快照</h2><p class="muted">板块仅展示当日涨幅前 10 和跌幅前 10，避免完整榜单冲淡主要方向。</p>{{$rising := sectorRisers .Sectors}}<h3>上涨板块</h3>{{if $rising}}<table><thead><tr><th>板块</th><th>涨跌幅</th><th>宽度</th><th>标签</th></tr></thead><tbody>{{range $rising}}<tr><td>{{.SectorName}}</td><td>{{pct .Chg1}}</td><td>{{printf "%.0f%%" .Breadth}}</td><td>{{.Tags}}</td></tr>{{end}}</tbody></table>{{else}}<p class="muted">无上涨板块。</p>{{end}}{{$falling := sectorFallers .Sectors}}<h3>下跌板块</h3>{{if $falling}}<table><thead><tr><th>板块</th><th>涨跌幅</th><th>宽度</th><th>标签</th></tr></thead><tbody>{{range $falling}}<tr><td>{{.SectorName}}</td><td>{{pct .Chg1}}</td><td>{{printf "%.0f%%" .Breadth}}</td><td>{{.Tags}}</td></tr>{{end}}</tbody></table>{{else}}<p class="muted">无下跌板块。</p>{{end}}{{end}}

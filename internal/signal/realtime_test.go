@@ -61,3 +61,17 @@ func TestRealtimeLimitStatusTrustsExactPriceBeforeFallback(t *testing.T) {
 		t.Fatalf("board fallback status = %v/%v, want limit-up", up, down)
 	}
 }
+
+func TestSellAtLimitUpIsNotMarkedAsBuyExecutionRisk(t *testing.T) {
+	result := SignalResult{Code: "600000.SH", SellCount: 2, TotalScore: -2}
+	quote := realtime.Quote{Code: result.Code, PrevClose: 10, Open: 10.5, Current: 11, ChangePct: 10, UpdateAt: "2026-07-24 10:30:00"}
+	limits := data.NewStkLimitStore([]data.StkLimit{{TsCode: result.Code, TradeDate: "20260724", UpLimit: 11, DownLimit: 9}})
+
+	labels := intradayLabels(result, quote, limits)
+	if containsString(labels, "涨停风险") || containsString(labels, "高开>3%") {
+		t.Fatalf("sell labels = %v, should not reuse buy-side execution risks", labels)
+	}
+	if !containsString(labels, "卖出缓和") {
+		t.Fatalf("sell labels = %v, want 卖出缓和", labels)
+	}
+}

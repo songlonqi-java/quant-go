@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 
+	"quant/internal/execution"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -13,6 +15,7 @@ type Config struct {
 	Data       DataConfig       `yaml:"data"`
 	Fetch      FetchConfig      `yaml:"fetch"`
 	Backtest   BacktestConfig   `yaml:"backtest"`
+	Liquidity  LiquidityConfig  `yaml:"liquidity"`
 	Signal     SignalConfig     `yaml:"signal"`
 	Portfolio  PortfolioConfig  `yaml:"portfolio"`
 	Validation ValidationConfig `yaml:"validation"`
@@ -60,6 +63,32 @@ type BacktestConfig struct {
 	Slippage       float64 `yaml:"slippage"`
 	RiskFreeRate   float64 `yaml:"risk_free_rate"`
 	LotSize        float64 `yaml:"lot_size"`
+}
+
+type LiquidityConfig struct {
+	Enabled             bool    `yaml:"enabled"`
+	MinListingDays      int     `yaml:"min_listing_days"`
+	AmountLookback      int     `yaml:"amount_lookback"`
+	MinAverageAmountCNY float64 `yaml:"min_average_amount_cny"`
+	MinTurnoverRatePct  float64 `yaml:"min_turnover_rate_pct"`
+	RequireTurnoverData bool    `yaml:"require_turnover_data"`
+	MaxParticipationPct float64 `yaml:"max_participation_pct"`
+	ImpactCoefficient   float64 `yaml:"impact_coefficient"`
+	MaxImpactRate       float64 `yaml:"max_impact_rate"`
+}
+
+func (c LiquidityConfig) Policy() execution.LiquidityPolicy {
+	return execution.LiquidityPolicy{
+		Enabled:             c.Enabled,
+		MinListingDays:      c.MinListingDays,
+		AmountLookback:      c.AmountLookback,
+		MinAverageAmountCNY: c.MinAverageAmountCNY,
+		MinTurnoverRatePct:  c.MinTurnoverRatePct,
+		RequireTurnoverData: c.RequireTurnoverData,
+		MaxParticipationPct: c.MaxParticipationPct,
+		ImpactCoefficient:   c.ImpactCoefficient,
+		MaxImpactRate:       c.MaxImpactRate,
+	}
 }
 
 type SignalConfig struct {
@@ -111,7 +140,10 @@ func (p PortfolioConfig) Normalized(fallbackEquity float64) PortfolioConfig {
 
 // ValidationConfig controls the out-of-sample evidence required before a
 // historical signal may be promoted into the formal recommendation list.
-// Path is relative to data.raw_dir when it is not absolute.
+// Path is relative to data.raw_dir when it is not absolute. MinSamples counts
+// independent, signal-date clusters rather than individual stock trades.
+// PriorSamples is the maximum equivalent sample weight assigned to broad
+// horizon or regime statistics when shrinking strategy-specific evidence.
 type ValidationConfig struct {
 	Enabled           bool    `yaml:"enabled"`
 	Path              string  `yaml:"path"`
@@ -144,6 +176,17 @@ var defaultConfig = Config{
 		Slippage:       0.0001,
 		RiskFreeRate:   0.03,
 		LotSize:        100,
+	},
+	Liquidity: LiquidityConfig{
+		Enabled:             true,
+		MinListingDays:      60,
+		AmountLookback:      20,
+		MinAverageAmountCNY: 20_000_000,
+		MinTurnoverRatePct:  0.5,
+		RequireTurnoverData: false,
+		MaxParticipationPct: 5,
+		ImpactCoefficient:   0.005,
+		MaxImpactRate:       0.02,
 	},
 	Signal: SignalConfig{
 		DefaultStrategies: []string{

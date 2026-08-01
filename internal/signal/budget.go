@@ -118,6 +118,7 @@ func ApplyPortfolioBudget(results []SignalResult, budget PortfolioBudget) Portfo
 		allocation.AllocatedBuys++
 		allocation.AllocatedPct += allocated
 	}
+	RefreshRiskPolicy(results)
 	return allocation
 }
 

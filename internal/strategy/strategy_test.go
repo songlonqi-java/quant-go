@@ -142,6 +142,30 @@ func TestMACDUsesRecursiveEMA(t *testing.T) {
 	assertNear(t, dif, 0.619727, 0.00001)
 	assertNear(t, dea, 0.537123, 0.00001)
 	assertNear(t, hist, 0.165208, 0.00001)
+
+	// Historical replay asks for several prefixes of the same immutable slice.
+	// They must share one linear precomputation instead of restarting at day 0.
+	s.macdAt(bars, 3)
+	if got := len(s.cache); got != 1 {
+		t.Fatalf("MACD cached series = %d, want 1", got)
+	}
+}
+
+func TestParabolicSARReusesLinearSeries(t *testing.T) {
+	bars := make([]data.DailyBar, 80)
+	for i := range bars {
+		closePrice := 10 + float64(i)*0.03 + math.Sin(float64(i)*0.4)
+		bars[i] = strategyBar(strategyDate(i), closePrice, closePrice+0.2, closePrice-0.2, closePrice)
+	}
+	s := NewParabolicSAR(0.02, 0.2)
+	for idx := s.Warmup(); idx < len(bars); idx++ {
+		if value := s.calcSAR(bars, idx); math.IsNaN(value) || math.IsInf(value, 0) {
+			t.Fatalf("SAR at %d is not finite: %v", idx, value)
+		}
+	}
+	if got := len(s.cache); got != 1 {
+		t.Fatalf("SAR cached series = %d, want 1", got)
+	}
 }
 
 func TestRSIUsesWilderSmoothing(t *testing.T) {
@@ -157,6 +181,30 @@ func TestRSIUsesWilderSmoothing(t *testing.T) {
 	assertNear(t, rsiValue(bars, 3, 3), 66.666667, 0.000001)
 	assertNear(t, rsiValue(bars, 4, 3), 83.333333, 0.000001)
 	assertNear(t, rsiValue(bars, 5, 3), 60.606061, 0.000001)
+	s := NewRSI(3, 30, 70)
+	s.value(bars, 5)
+	s.value(bars, 4)
+	if got := len(s.cache); got != 1 {
+		t.Fatalf("RSI cached series = %d, want 1", got)
+	}
+}
+
+func TestKDJCacheDoesNotThrashAcrossStocks(t *testing.T) {
+	first := make([]data.DailyBar, 30)
+	second := make([]data.DailyBar, 30)
+	for i := range first {
+		firstClose := 10 + float64(i)*0.04
+		secondClose := 20 - float64(i)*0.03
+		first[i] = strategyBar(strategyDate(i), firstClose, firstClose+0.2, firstClose-0.2, firstClose)
+		second[i] = strategyBar(strategyDate(i), secondClose, secondClose+0.2, secondClose-0.2, secondClose)
+	}
+	s := NewKDJ(9, 20, 80)
+	s.kdValue(first, 20)
+	s.kdValue(second, 20)
+	s.kdValue(first, 21)
+	if got := len(s.cache); got != 2 {
+		t.Fatalf("KDJ cached series = %d, want one per stock", got)
+	}
 }
 
 func TestBollingerSellComparesPreviousCloseToPreviousUpperBand(t *testing.T) {

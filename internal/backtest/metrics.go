@@ -114,6 +114,11 @@ func realizedTradeReturns(trades []Trade) []float64 {
 				open[trade.Code] = append(open[trade.Code], openLot{shares: trade.Shares, price: trade.Price})
 			}
 		case "SELL":
+			if trade.HasReturn {
+				returns = append(returns, trade.ReturnPct)
+				delete(open, trade.Code)
+				continue
+			}
 			lots := open[trade.Code]
 			if len(lots) == 0 || trade.Price <= 0 {
 				continue

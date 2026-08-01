@@ -22,6 +22,11 @@ type SignalResult struct {
 	GroupScores             map[string]float64
 	BuyCount                int
 	SellCount               int
+	BuyGroupCount           int
+	SellGroupCount          int
+	EffectiveBuyVotes       float64
+	EffectiveSellVotes      float64
+	VoteMetricsApplied      bool
 	RawScore                float64
 	TotalScore              float64
 	Confidence              float64
@@ -43,6 +48,21 @@ type SignalResult struct {
 	RiskLabels              []string
 	Reasons                 []string
 	HistoricalEvidence      *HistoricalEvidence
+	RiskEffects             []RiskEffect
+	LiquidityModel          string
+	LiquidityApplied        bool
+	LiquidityEligible       bool
+	ListingDays             int
+	AverageAmountCNY        float64
+	TurnoverRatePct         float64
+	HasTurnover             bool
+	EstimatedOrderValueCNY  float64
+	ParticipationPct        float64
+	EstimatedImpactPct      float64
+	riskPolicyApplied       bool
+	riskBaseConfidence      float64
+	riskBasePositionPct     float64
+	riskPenaltyReason       string
 }
 
 type SignalDetail struct {
@@ -71,6 +91,7 @@ func GenerateWithContextAndMoneyflow(barsMap map[string][]data.DailyBar, strateg
 		horizonResults := generateForHorizon(barsMap, grouped[horizon], topN, names, marketStatus, moneyflowStore, horizon)
 		results = append(results, horizonResults...)
 	}
+	ApplyRiskPolicy(results)
 	return results
 }
 
@@ -124,6 +145,7 @@ func generateForHorizon(barsMap map[string][]data.DailyBar, strategies []strateg
 		}
 
 		if r.BuyCount > 0 || r.SellCount > 0 {
+			applyEffectiveVotes(&r)
 			r.RawScore = cappedGroupScore(r.GroupScores)
 			r.TotalScore = applyMarketAdjustment(r.RawScore, marketStatus)
 			r.Confidence = confidenceScore(r)
@@ -247,9 +269,10 @@ func isWatchCandidate(r SignalResult) bool {
 }
 
 func watchScore(r SignalResult) float64 {
-	score := r.TotalScore + float64(r.BuyCount)*0.25 + r.Confidence/100
-	if r.SellCount > 0 {
-		score -= float64(r.SellCount) * 0.8
+	buyVotes, sellVotes := effectiveVoteTotals(r)
+	score := r.TotalScore + buyVotes*0.25 + r.Confidence/100
+	if sellVotes > 0 {
+		score -= sellVotes * 0.8
 	}
 	if r.Suppressed {
 		score -= 0.2
@@ -270,10 +293,18 @@ func FilterByHorizon(results []SignalResult, horizon strategy.Horizon) []SignalR
 func (r SignalResult) SignalSummary() string {
 	parts := []string{}
 	if r.BuyCount > 0 {
-		parts = append(parts, fmt.Sprintf("买入×%d", r.BuyCount))
+		if r.VoteMetricsApplied {
+			parts = append(parts, fmt.Sprintf("买入×%d(有效%.2f/%d组)", r.BuyCount, r.EffectiveBuyVotes, r.BuyGroupCount))
+		} else {
+			parts = append(parts, fmt.Sprintf("买入×%d", r.BuyCount))
+		}
 	}
 	if r.SellCount > 0 {
-		parts = append(parts, fmt.Sprintf("卖出×%d", r.SellCount))
+		if r.VoteMetricsApplied {
+			parts = append(parts, fmt.Sprintf("卖出×%d(有效%.2f/%d组)", r.SellCount, r.EffectiveSellVotes, r.SellGroupCount))
+		} else {
+			parts = append(parts, fmt.Sprintf("卖出×%d", r.SellCount))
+		}
 	}
 	if len(parts) == 0 {
 		return "观望"
@@ -289,9 +320,10 @@ func (r SignalResult) Recommendation() string {
 }
 
 func rawRecommendation(r SignalResult) string {
-	if r.BuyCount > r.SellCount && r.TotalScore > 0 {
+	buyVotes, sellVotes := effectiveVoteTotals(r)
+	if buyVotes > sellVotes && r.TotalScore > 0 {
 		return "买入"
-	} else if r.SellCount > r.BuyCount && r.TotalScore < 0 {
+	} else if sellVotes > buyVotes && r.TotalScore < 0 {
 		return "卖出"
 	}
 	return "观望"
@@ -370,11 +402,12 @@ func applyMarketAdjustment(score float64, marketStatus *market.MarketStatus) flo
 }
 
 func confidenceScore(r SignalResult) float64 {
-	dominant, opposing := r.BuyCount, r.SellCount
+	buyVotes, sellVotes := effectiveVoteTotals(r)
+	dominant, opposing := buyVotes, sellVotes
 	if r.TotalScore < 0 {
-		dominant, opposing = r.SellCount, r.BuyCount
+		dominant, opposing = sellVotes, buyVotes
 	}
-	conf := 45 + math.Abs(r.TotalScore)*10 + float64(dominant-opposing)*3 - float64(opposing)*15
+	conf := 45 + math.Abs(r.TotalScore)*10 + (dominant-opposing)*3 - opposing*15
 	if conf < 0 {
 		return 0
 	}
@@ -413,7 +446,7 @@ func riskLabels(r SignalResult, bars []data.DailyBar, idx int, marketStatus *mar
 	if r.SellCount > 0 {
 		labels = append(labels, "有卖出冲突")
 	}
-	if r.BuyCount <= 2 {
+	if rawRecommendation(r) == "买入" && !hasRequiredIndependentConsensus(r) {
 		labels = append(labels, "信号较少")
 	}
 	if idx >= 5 && bars[idx-5].Close > 0 {
@@ -519,6 +552,7 @@ func ApplySectorContext(results []SignalResult, report *sector.Report, membershi
 			}
 		}
 	}
+	ApplyRiskPolicy(results)
 }
 
 func reasons(r SignalResult) []string {
@@ -541,6 +575,10 @@ func reasons(r SignalResult) []string {
 	}
 	if len(sellNames) > 0 {
 		out = append(out, "卖出冲突: "+strings.Join(sellNames, ","))
+	}
+	if r.VoteMetricsApplied {
+		out = append(out, fmt.Sprintf("有效共识: 买入%.2f票/%d组, 卖出%.2f票/%d组",
+			r.EffectiveBuyVotes, r.BuyGroupCount, r.EffectiveSellVotes, r.SellGroupCount))
 	}
 	return out
 }

@@ -69,6 +69,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("缺少配置")
 	}
 	cfg := opts.Config
+	liquidityPolicy := cfg.Liquidity.Policy()
+	if err := liquidityPolicy.Validate(); err != nil {
+		return nil, fmt.Errorf("流动性配置无效: %w", err)
+	}
 	if opts.PortfolioPath == "" {
 		opts.PortfolioPath = "portfolio.yaml"
 	}
@@ -89,7 +93,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		LatestOnly:       true,
 		FilterST:         true,
 		MinMarketCap:     cfg.Fetch.MinMarketCap,
-		LoadFundamentals: usesFundamentals(selectedStrategies),
+		LoadFundamentals: usesFundamentals(selectedStrategies) || (liquidityPolicy.Enabled && liquidityPolicy.MinTurnoverRatePct > 0),
 	})
 	if err != nil {
 		return nil, err
@@ -142,6 +146,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	allSignals := signals.GenerateWithContextAndMoneyflow(ds.CodeMap, selectedStrategies, 0, ds.StockNames, result.MarketStatus, ds.Moneyflows)
+	signals.ApplyLiquidityPolicy(allSignals, ds.CodeMap, signals.LiquidityContext{
+		Policy: liquidityPolicy, StockInfos: ds.StockInfos, Fundamentals: ds.Fundamentals,
+		ReferenceEquity: cfg.Portfolio.Normalized(cfg.Backtest.InitialCapital).ReferenceEquity,
+		ApplyCurrentST:  true,
+	})
 	memberships, membershipErr := sector.LoadIndustryMemberships(cfg.Data.RawDir)
 	if membershipErr == nil {
 		signals.ApplySectorContext(allSignals, result.SectorReport, memberships)
@@ -160,7 +169,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				result.ValidationErr = err
 			}
 		} else {
-			if err := store.ValidateCompatibility(selectedStrategies, cfg.Backtest.Commission, cfg.Backtest.Slippage, ds.AllCodeMap, ds.Fundamentals, ds.Moneyflows); err != nil {
+			if err := store.ValidateCompatibilityWithExecution(
+				selectedStrategies, cfg.Backtest.Commission, cfg.Backtest.Slippage,
+				liquidityPolicy, cfg.Portfolio.Normalized(cfg.Backtest.InitialCapital).ReferenceEquity,
+				ds.AllCodeMap, ds.StockInfos, ds.Fundamentals, ds.Moneyflows,
+			); err != nil {
 				result.ValidationErr = err
 			} else {
 				policy := validation.Policy{

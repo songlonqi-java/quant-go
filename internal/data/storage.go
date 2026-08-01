@@ -310,6 +310,20 @@ func LoadStockNames(path string) map[string]string {
 	return names
 }
 
+func LoadStockInfos(path string) map[string]StockInfo {
+	infos := make(map[string]StockInfo)
+	rows, err := readGenericParquet[StockInfo](path)
+	if err != nil {
+		return infos
+	}
+	for _, stock := range rows {
+		if stock.TsCode != "" {
+			infos[stock.TsCode] = stock
+		}
+	}
+	return infos
+}
+
 func readGenericParquet[T any](filePath string) ([]T, error) {
 	f, err := os.Open(filePath)
 	if err != nil {

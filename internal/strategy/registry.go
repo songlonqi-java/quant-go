@@ -71,6 +71,7 @@ func DefaultRegistry() *Registry {
 	r.Register(NewLimitUp(9.5, 1.2))
 	r.Register(NewBottomReversal(20, -15, 1.5, 0, 0.5))
 	r.Register(NewRelativeStrength(20, 60, 120, 10))
+	r.Register(NewMarketNeutralMomentum(20, 60, 120, 60, 40, 10))
 	r.Register(NewATRBreakout(20, 14, 20, 6, 1.2))
 	r.Register(NewTrendPullback(2.5, 1.3))
 	r.Register(NewQualityValue(120, 25, 3, 12, 1.5))

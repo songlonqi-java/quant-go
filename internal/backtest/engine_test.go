@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"quant/internal/data"
+	"quant/internal/execution"
 	"quant/internal/strategy"
 )
 
@@ -171,6 +172,78 @@ func TestRunSkipsBuyWhenCashCannotCoverHundredShareLot(t *testing.T) {
 	}
 	if result.SkippedSignals != 1 {
 		t.Fatalf("SkippedSignals = %d, want 1", result.SkippedSignals)
+	}
+}
+
+func TestRunManagedTimeStopPersistsThroughLimitDown(t *testing.T) {
+	bars := []data.DailyBar{
+		bar("20260101", 10, 10, 1000),
+		bar("20260102", 10, 10, 1000),
+		bar("20260103", 10, 10, 1000),
+		bar("20260104", 10, 10, 1000),
+		bar("20260105", 10, 10, 1000),
+		bar("20260106", 10, 10, 1000),
+		bar("20260107", 9, 9, 1000),
+		bar("20260108", 8.9, 8.9, 1000),
+	}
+	bars[6].DownLimit = 9
+	result := Run(bars, func(_ []data.DailyBar, idx int) strategy.SignalType {
+		if idx == 0 {
+			return strategy.Buy
+		}
+		return strategy.Hold
+	}, Config{InitialCapital: 2000, Horizon: strategy.HorizonShort, ManagedExits: true})
+
+	if len(result.Trades) != 2 {
+		t.Fatalf("trades = %+v", result.Trades)
+	}
+	sell := result.Trades[1]
+	if sell.Reason != "time_stop" || sell.SignalDate != "20260106" || sell.Date != "20260108" || sell.DelayDays != 1 {
+		t.Fatalf("managed sell = %+v", sell)
+	}
+	if result.DelayedExitTrades != 1 || result.ExitDelayDays != 1 || result.ExitReasonCounts["time_stop"] != 1 {
+		t.Fatalf("exit stats = %+v", result)
+	}
+}
+
+func TestRunAppliesParticipationImpactAndRejectsOversizedEntry(t *testing.T) {
+	policy := execution.LiquidityPolicy{
+		Enabled: true, AmountLookback: 2, MaxParticipationPct: 5,
+		ImpactCoefficient: 0.005, MaxImpactRate: 0.02,
+	}
+	bars := []data.DailyBar{
+		bar("20260101", 10, 10, 1000), bar("20260102", 10, 10, 1000), bar("20260103", 10, 10, 1000),
+	}
+	for i := range bars {
+		bars[i].Amount = 20_000 // 20 million CNY
+	}
+	result := Run(bars, func(_ []data.DailyBar, idx int) strategy.SignalType {
+		if idx == 0 {
+			return strategy.Buy
+		}
+		if idx == 1 {
+			return strategy.Sell
+		}
+		return strategy.Hold
+	}, Config{InitialCapital: 100_000, LotSize: 100, Liquidity: policy})
+	if len(result.Trades) != 2 || result.Trades[0].ImpactRate <= 0 || result.Trades[1].ImpactRate <= 0 {
+		t.Fatalf("impact trades = %+v", result.Trades)
+	}
+	if result.Trades[0].Price <= 10 || result.Trades[1].Price >= 10 {
+		t.Fatalf("adverse impact prices = %+v", result.Trades)
+	}
+
+	for i := range bars {
+		bars[i].Amount = 1_000 // 1 million CNY; a 100k order is 10%
+	}
+	rejected := Run(bars[:2], func(_ []data.DailyBar, idx int) strategy.SignalType {
+		if idx == 0 {
+			return strategy.Buy
+		}
+		return strategy.Hold
+	}, Config{InitialCapital: 100_000, LotSize: 100, Liquidity: policy})
+	if len(rejected.Trades) != 0 || rejected.SkippedSignals != 1 {
+		t.Fatalf("oversized entry = %+v", rejected)
 	}
 }
 

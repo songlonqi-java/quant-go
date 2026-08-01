@@ -13,6 +13,7 @@ import (
 	"quant/internal/config"
 	"quant/internal/data"
 	"quant/internal/dataset"
+	"quant/internal/execution"
 	"quant/internal/forward"
 	"quant/internal/market"
 	"quant/internal/portfolio"
@@ -334,6 +335,7 @@ func backtestCmd() *cobra.Command {
 		capital       float64
 		topN          int
 		ensemble      bool
+		ablation      string
 		allowAdjusted bool
 	)
 
@@ -346,6 +348,13 @@ func backtestCmd() *cobra.Command {
 多股票共享资金账户，复用正式信号的聚合、市场状态、资格过滤、Top-N 和组合预算。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			if ablation != "" && !ensemble {
+				return fmt.Errorf("--ablation 仅支持 --ensemble 共享资金组合回测")
+			}
+			liquidityPolicy := cfg.Liquidity.Policy()
+			if err := liquidityPolicy.Validate(); err != nil {
+				return fmt.Errorf("流动性配置无效: %w", err)
+			}
 			reg := strategy.DefaultRegistry()
 
 			var selectedStrategies []strategy.Strategy
@@ -393,6 +402,7 @@ func backtestCmd() *cobra.Command {
 
 			sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
 			codeMap := data.GroupByCode(bars)
+			stockInfos := data.LoadStockInfos(cfg.Data.RawDir + "/stocks.parquet")
 			codes := sortedCodes(codeMap)
 			fmt.Printf("加载 %d 只股票, %d 条记录\n", len(codeMap), len(bars))
 
@@ -404,6 +414,8 @@ func backtestCmd() *cobra.Command {
 				Commission:     cfg.Backtest.Commission,
 				Slippage:       cfg.Backtest.Slippage,
 				LotSize:        cfg.Backtest.LotSize,
+				ManagedExits:   true,
+				Liquidity:      liquidityPolicy,
 			}
 
 			if ensemble {
@@ -420,11 +432,14 @@ func backtestCmd() *cobra.Command {
 				if candidateTopN == 0 {
 					candidateTopN = cfg.Signal.TopN
 				}
-				result, err := backtest.RunPortfolio(backtest.PortfolioOptions{
+				portfolioOptions := backtest.PortfolioOptions{
 					CodeMap:      codeMap,
 					StockNames:   data.LoadStockNames(cfg.Data.RawDir + "/stocks.parquet"),
 					Strategies:   selectedStrategies,
 					Moneyflows:   moneyflows,
+					StockInfos:   stockInfos,
+					Fundamentals: fundStore,
+					Liquidity:    liquidityPolicy,
 					StartDate:    startDate,
 					EndDate:      endDate,
 					TopN:         candidateTopN,
@@ -438,7 +453,38 @@ func backtestCmd() *cobra.Command {
 						}
 						return ""
 					},
-				})
+				}
+				if ablation != "" {
+					baselineNames := withoutStrategy(strategyNames, ablation)
+					if len(baselineNames) == 0 {
+						return fmt.Errorf("消融基线至少需要一个非 %s 策略", ablation)
+					}
+					variantNames := withStrategy(baselineNames, ablation)
+					baselineStrategies, err := registeredStrategies(baselineNames)
+					if err != nil {
+						return err
+					}
+					variantStrategies, err := registeredStrategies(variantNames)
+					if err != nil {
+						return err
+					}
+					portfolioOptions.Strategies = baselineStrategies
+					fmt.Printf("\n>>> 运行消融基线（%d 个策略）...\n", len(baselineStrategies))
+					baselineResult, err := backtest.RunPortfolio(portfolioOptions)
+					if err != nil {
+						return fmt.Errorf("运行消融基线: %w", err)
+					}
+					portfolioOptions.Strategies = variantStrategies
+					fmt.Printf(">>> 基线完成，运行加入 %s 的实验组（%d 个策略）...\n", ablation, len(variantStrategies))
+					variantResult, err := backtest.RunPortfolio(portfolioOptions)
+					if err != nil {
+						return fmt.Errorf("运行加入 %s 的组合: %w", ablation, err)
+					}
+					comparison := backtest.CompareAblation(baselineResult, variantResult, capital, cfg.Backtest.RiskFreeRate, 252)
+					printAblationComparison(ablation, baselineNames, variantNames, comparison)
+					return nil
+				}
+				result, err := backtest.RunPortfolio(portfolioOptions)
 				if err != nil {
 					return err
 				}
@@ -449,6 +495,7 @@ func backtestCmd() *cobra.Command {
 				metrics := backtest.CalculateMetrics(result, capital, cfg.Backtest.RiskFreeRate, 252)
 				metrics.Print()
 				fmt.Printf("未成交/延迟成交次数: %d\n", result.SkippedSignals)
+				printExitSummary(result)
 				fmt.Println("说明: evidence.json 不会回灌历史日期，以免使用未来汇总证据；组合回测按当日信号资格规则逐日决策。")
 				return nil
 			}
@@ -464,6 +511,9 @@ func backtestCmd() *cobra.Command {
 				var bestEquity float64
 				bestSet := false
 				var metricsList []backtest.PerformanceMetrics
+				exitSummary := &backtest.Result{ExitReasonCounts: make(map[string]int)}
+				strategyCfg := btCfg
+				strategyCfg.Horizon = strategy.HorizonForStrategy(s.Name())
 
 				for _, code := range codes {
 					stockBars := codeMap[code]
@@ -474,8 +524,25 @@ func backtestCmd() *cobra.Command {
 					wrapFn := func(bars []data.DailyBar, idx int) strategy.SignalType {
 						return s.Signal(bars, idx)
 					}
-					result := backtest.Run(stockBars, wrapFn, btCfg)
+					runCfg := strategyCfg
+					info := stockInfos[code]
+					runCfg.ListDate = info.ListDate
+					// stocks.parquet stores the current name. Applying it to every
+					// historical date would turn today's ST status into look-ahead.
+					runCfg.StockName = ""
+					if fundStore != nil {
+						currentCode := code
+						runCfg.TurnoverRate = func(date string) (float64, bool) {
+							basic := fundStore.GetDailyBasic(currentCode, date)
+							if basic == nil {
+								return 0, false
+							}
+							return basic.TurnoverRate, true
+						}
+					}
+					result := backtest.Run(stockBars, wrapFn, runCfg)
 					if result.TradeCount > 0 {
+						mergeExitSummary(exitSummary, result)
 						returnPct := (result.FinalEquity - capital) / capital * 100
 						if !bestSet || returnPct > bestEquity {
 							bestEquity = returnPct
@@ -493,6 +560,7 @@ func backtestCmd() *cobra.Command {
 
 				fmt.Printf("有效回测: %d 只股票\n", count)
 				printBacktestAggregate(metricsList)
+				printExitSummary(exitSummary)
 				if bestResult != nil {
 					fmt.Printf("\n最佳表现: %s\n", bestCode)
 					metrics := backtest.CalculateMetrics(bestResult, capital, cfg.Backtest.RiskFreeRate, 252)
@@ -510,9 +578,134 @@ func backtestCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&capital, "capital", 0, "初始资金")
 	cmd.Flags().IntVarP(&topN, "top", "n", 0, "单策略模式只测前N只股票；组合模式为每周期候选数（0=配置值）")
 	cmd.Flags().BoolVar(&ensemble, "ensemble", false, "运行共享资金账户的多股票、多策略组合回测")
+	cmd.Flags().StringVar(&ablation, "ablation", "", "组合消融：比较基线与加入指定策略后的总绩效、换手和逐年稳定性")
 	cmd.Flags().BoolVar(&allowAdjusted, "allow-adjusted-trades", false, "允许用复权价近似成交价（仅用于旧数据临时验证）")
 
 	return cmd
+}
+
+func mergeExitSummary(target, source *backtest.Result) {
+	if target == nil || source == nil {
+		return
+	}
+	targetExits := 0
+	for _, count := range target.ExitReasonCounts {
+		targetExits += count
+	}
+	if target.ExitReasonCounts == nil {
+		target.ExitReasonCounts = make(map[string]int)
+	}
+	for reason, count := range source.ExitReasonCounts {
+		target.ExitReasonCounts[reason] += count
+	}
+	target.DelayedExitTrades += source.DelayedExitTrades
+	target.ExitDelayDays += source.ExitDelayDays
+	if source.MaxExitDelayDays > target.MaxExitDelayDays {
+		target.MaxExitDelayDays = source.MaxExitDelayDays
+	}
+	target.TailLossTrades += source.TailLossTrades
+	target.ImpactedTrades += source.ImpactedTrades
+	target.TotalImpactRate += source.TotalImpactRate
+	if source.MaxImpactRate > target.MaxImpactRate {
+		target.MaxImpactRate = source.MaxImpactRate
+	}
+	if source.MaxParticipationPct > target.MaxParticipationPct {
+		target.MaxParticipationPct = source.MaxParticipationPct
+	}
+	if targetExits == 0 || source.WorstTradeReturnPct < target.WorstTradeReturnPct {
+		target.WorstTradeReturnPct = source.WorstTradeReturnPct
+	}
+}
+
+func printExitSummary(result *backtest.Result) {
+	if result == nil || len(result.ExitReasonCounts) == 0 {
+		return
+	}
+	reasons := make([]string, 0, len(result.ExitReasonCounts))
+	for reason := range result.ExitReasonCounts {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	parts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		parts = append(parts, fmt.Sprintf("%s=%d", reason, result.ExitReasonCounts[reason]))
+	}
+	fmt.Printf("退出原因:     %s\n", strings.Join(parts, ", "))
+	fmt.Printf("延迟退出:     %d 笔 / %d 个交易日（最长 %d 日）\n", result.DelayedExitTrades, result.ExitDelayDays, result.MaxExitDelayDays)
+	fmt.Printf("尾部亏损:     %d 笔，最差单笔净收益 %.2f%%\n", result.TailLossTrades, result.WorstTradeReturnPct)
+	if result.ImpactedTrades > 0 {
+		fmt.Printf("流动性冲击:   %d 个成交边，平均 %.3f%%，最大 %.3f%%；最大成交占比 %.2f%%\n",
+			result.ImpactedTrades, result.TotalImpactRate/float64(result.ImpactedTrades)*100,
+			result.MaxImpactRate*100, result.MaxParticipationPct)
+	}
+}
+
+func withoutStrategy(names []string, target string) []string {
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != target {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
+}
+
+func withStrategy(names []string, target string) []string {
+	result := append([]string(nil), names...)
+	for _, name := range result {
+		if name == target {
+			return result
+		}
+	}
+	return append(result, target)
+}
+
+func printAblationComparison(name string, baselineNames, variantNames []string, comparison backtest.AblationComparison) {
+	base := comparison.BaselineMetrics
+	variant := comparison.VariantMetrics
+	fmt.Printf("\n========== 策略消融: %s ==========\n", name)
+	fmt.Printf("基线策略: %s\n", strings.Join(baselineNames, ", "))
+	fmt.Printf("实验策略: %s\n", strings.Join(variantNames, ", "))
+	fmt.Println("指标                 基线          加入因子       差值")
+	fmt.Printf("总净收益           %9.2f%%    %9.2f%%    %+9.2f%%\n", base.TotalReturn, variant.TotalReturn, variant.TotalReturn-base.TotalReturn)
+	fmt.Printf("年化收益           %9.2f%%    %9.2f%%    %+9.2f%%\n", base.AnnualizedReturn, variant.AnnualizedReturn, variant.AnnualizedReturn-base.AnnualizedReturn)
+	fmt.Printf("最大回撤           %9.2f%%    %9.2f%%    %+9.2f%%\n", base.MaxDrawdown, variant.MaxDrawdown, variant.MaxDrawdown-base.MaxDrawdown)
+	fmt.Printf("夏普比率           %9.2f     %9.2f     %+9.2f\n", base.SharpeRatio, variant.SharpeRatio, variant.SharpeRatio-base.SharpeRatio)
+	fmt.Printf("半边换手率         %9.2f%%    %9.2f%%    %+9.2f%%\n", comparison.BaselineTurnover, comparison.VariantTurnover, comparison.VariantTurnover-comparison.BaselineTurnover)
+	fmt.Printf("成交记录           %9d     %9d     %+9d\n", base.TotalTrades, variant.TotalTrades, variant.TotalTrades-base.TotalTrades)
+
+	baselinePeriods := make(map[string]backtest.PeriodPerformance, len(comparison.BaselinePeriods))
+	for _, period := range comparison.BaselinePeriods {
+		baselinePeriods[period.Period] = period
+	}
+	fmt.Println("\n年度       基线收益   实验收益   收益差值   基线回撤   实验回撤   基线/实验换手")
+	for _, period := range comparison.VariantPeriods {
+		baseline, ok := baselinePeriods[period.Period]
+		if !ok {
+			continue
+		}
+		fmt.Printf("%s    %8.2f%%  %8.2f%%  %+8.2f%%  %8.2f%%  %8.2f%%  %7.1f%%/%7.1f%%\n",
+			period.Period, baseline.ReturnPct, period.ReturnPct, period.ReturnPct-baseline.ReturnPct,
+			baseline.MaxDrawdown, period.MaxDrawdown, baseline.TurnoverPct, period.TurnoverPct)
+	}
+	fmt.Printf("跨年稳定性: %d/%d 个可比年份收益改善。只有收益、回撤和换手同时可接受，才建议进入默认策略。\n",
+		comparison.PositivePeriods, comparison.ComparablePeriods)
+}
+
+func formatCountMap(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "无"
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, counts[key]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func signalCmd() *cobra.Command {
@@ -687,9 +880,13 @@ func forwardCmd() *cobra.Command {
 
 	validateCmd := &cobra.Command{
 		Use:   "validate",
-		Short: "用本地行情回填前向测试收益",
+		Short: "用本地行情回填前向测试毛收益、交易成本和净收益",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			liquidityPolicy := cfg.Liquidity.Policy()
+			if err := liquidityPolicy.Validate(); err != nil {
+				return fmt.Errorf("流动性配置无效: %w", err)
+			}
 			bars, err := data.ReadParquetDir(cfg.Data.RawDir + "/daily")
 			if err != nil {
 				return fmt.Errorf("加载数据失败: %w", err)
@@ -699,11 +896,21 @@ func forwardCmd() *cobra.Command {
 				return fmt.Errorf("%s；前向验证需要真实价字段，请重新拉取行情数据，或临时使用 --allow-adjusted-trades", q.Summary())
 			}
 			codeMap := data.GroupByCode(bars)
-			updated, err := forward.Validate(dir, codeMap)
+			portfolioCfg := cfg.Portfolio.Normalized(cfg.Backtest.InitialCapital)
+			updated, err := forward.ValidateWithExecution(dir, codeMap, execution.CostModel{
+				Commission: cfg.Backtest.Commission,
+				Slippage:   cfg.Backtest.Slippage,
+			}, liquidityPolicy, portfolioCfg.ReferenceEquity)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("前向测试验证完成: 更新 %d 个字段\n", updated)
+			fmt.Printf("前向测试验证完成: 更新 %d 项观察期或退出状态\n", updated)
+			fmt.Printf("成本口径: 手续费 %.4f%%/边，滑点 %.4f%%/边，买卖双边计入净收益\n",
+				cfg.Backtest.Commission*100, cfg.Backtest.Slippage*100)
+			if liquidityPolicy.Enabled {
+				fmt.Printf("流动性口径: 订单占日均成交额不超过 %.2f%%，冲击系数 %.4f，单边冲击上限 %.2f%%\n",
+					liquidityPolicy.MaxParticipationPct, liquidityPolicy.ImpactCoefficient, liquidityPolicy.MaxImpactRate*100)
+			}
 			return nil
 		},
 	}
@@ -742,6 +949,10 @@ func validationCmd() *cobra.Command {
 		Short: "回放全历史信号并生成推荐资格、胜率和权重证据",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			liquidityPolicy := cfg.Liquidity.Policy()
+			if err := liquidityPolicy.Validate(); err != nil {
+				return fmt.Errorf("流动性配置无效: %w", err)
+			}
 			names := strategyNames
 			if len(names) == 0 {
 				names = strategy.DailyStrategyNames(cfg.Signal.DefaultStrategies)
@@ -750,7 +961,7 @@ func validationCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			loadFundamentals := false
+			loadFundamentals := liquidityPolicy.Enabled && liquidityPolicy.MinTurnoverRatePct > 0
 			for _, current := range strategies {
 				if _, ok := current.(strategy.FundStoreUser); ok {
 					loadFundamentals = true
@@ -769,16 +980,19 @@ func validationCmd() *cobra.Command {
 				path = validation.DefaultPath(cfg.Data.RawDir, cfg.Validation.Path)
 			}
 			store, err := validation.Build(validation.BuildOptions{
-				CodeMap:      ds.CodeMap,
-				StockNames:   ds.StockNames,
-				Strategies:   strategies,
-				Fundamentals: ds.Fundamentals,
-				Moneyflows:   ds.Moneyflows,
-				Commission:   cfg.Backtest.Commission,
-				Slippage:     cfg.Backtest.Slippage,
-				Workers:      workers,
-				StartDate:    startDate,
-				EndDate:      endDate,
+				CodeMap:         ds.CodeMap,
+				StockNames:      ds.StockNames,
+				StockInfos:      ds.StockInfos,
+				Strategies:      strategies,
+				Fundamentals:    ds.Fundamentals,
+				Moneyflows:      ds.Moneyflows,
+				Commission:      cfg.Backtest.Commission,
+				Slippage:        cfg.Backtest.Slippage,
+				Liquidity:       liquidityPolicy,
+				ReferenceEquity: cfg.Portfolio.Normalized(cfg.Backtest.InitialCapital).ReferenceEquity,
+				Workers:         workers,
+				StartDate:       startDate,
+				EndDate:         endDate,
 			})
 			if err != nil {
 				return err
@@ -788,7 +1002,15 @@ func validationCmd() *cobra.Command {
 			}
 			fmt.Printf("历史验证完成: %s\n", path)
 			fmt.Printf("回放区间: %s ~ %s，样本外折数: %d\n", store.StartDate, store.EndDate, len(store.Folds))
-			fmt.Printf("信号快照: %d，实际可成交样本: %d，跳过: %d，统计桶: %d\n", store.ScannedSignals, store.FeasibleTrades, store.SkippedTrades, len(store.Stats))
+			fmt.Printf("信号快照: %d，独立可成交样本: %d，不可成交: %d，重叠过滤: %d，embargo: %d，跨折清除: %d，统计桶: %d\n",
+				store.ScannedSignals, store.FeasibleTrades, store.SkippedTrades, store.OverlappingSignals,
+				store.EmbargoedSignals, store.PurgedSignals, len(store.Stats))
+			fmt.Printf("退出原因: %s；延迟退出: %d 笔/%d 日（最长 %d 日）；尾部亏损: %d；最差净收益: %.2f%%\n",
+				formatCountMap(store.ExitReasonCounts), store.DelayedExitTrades, store.ExitDelayDays,
+				store.MaxExitDelayDays, store.TailLossTrades, store.WorstNetReturnPct)
+			fmt.Printf("流动性过滤: %d；受冲击成本影响: %d 笔；平均进/出冲击: %.3f%% / %.3f%%；最大冲击/成交占比: %.3f%% / %.2f%%\n",
+				store.LiquidityFiltered, store.ImpactedTrades, store.AverageEntryImpactPct, store.AverageExitImpactPct,
+				store.MaxImpactPct, store.MaxParticipationPct)
 			return nil
 		},
 	}

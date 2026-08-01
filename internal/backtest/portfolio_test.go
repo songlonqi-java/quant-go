@@ -76,6 +76,48 @@ func TestRunPortfolioKeepsPreStartBarsForWarmup(t *testing.T) {
 	}
 }
 
+func TestRunPortfolioManagedExitRecordsLimitDownDelay(t *testing.T) {
+	bars := []data.DailyBar{
+		portfolioBar("000001.SZ", "20260101", 10),
+		portfolioBar("000001.SZ", "20260102", 10),
+		portfolioBar("000001.SZ", "20260103", 10),
+		portfolioBar("000001.SZ", "20260104", 10),
+		portfolioBar("000001.SZ", "20260105", 10),
+		portfolioBar("000001.SZ", "20260106", 10),
+		portfolioBar("000001.SZ", "20260107", 9),
+		portfolioBar("000001.SZ", "20260108", 8.9),
+	}
+	bars[6].Open, bars[6].High, bars[6].Low, bars[6].Close = 9, 9, 9, 9
+	bars[6].RawOpen, bars[6].RawHigh, bars[6].RawLow, bars[6].RawClose = 9, 9, 9, 9
+	bars[6].DownLimit = 9
+	strategies := []strategy.Strategy{
+		portfolioBuyOnlyStrategy{name: "limit_up"},
+		portfolioBuyOnlyStrategy{name: "sar"},
+		portfolioBuyOnlyStrategy{name: "kdj"},
+	}
+	flows := data.NewMoneyflowStore([]data.Moneyflow{{
+		TsCode: "000001.SZ", TradeDate: "20260101", NetMfAmount: 100, BuyLgAmount: 100, BuyElgAmount: 100,
+	}})
+	result, err := RunPortfolio(PortfolioOptions{
+		CodeMap: map[string][]data.DailyBar{"000001.SZ": bars}, Strategies: strategies, Moneyflows: flows, TopN: 1,
+		Config:      Config{InitialCapital: 100_000, LotSize: 100},
+		MaxTotalPct: 70, MaxSinglePct: 15, MaxSectorPct: 25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Trades) != 2 {
+		t.Fatalf("trades = %+v", result.Trades)
+	}
+	sell := result.Trades[1]
+	if sell.Reason != "time_stop" || sell.Date != "20260108" || sell.DelayDays != 1 {
+		t.Fatalf("managed sell = %+v", sell)
+	}
+	if result.DelayedExitTrades != 1 || result.ExitReasonCounts["time_stop"] != 1 {
+		t.Fatalf("exit stats = %+v", result)
+	}
+}
+
 type portfolioTestStrategy struct{ name string }
 
 func (s portfolioTestStrategy) Name() string { return s.name }
@@ -103,6 +145,18 @@ func (s portfolioWarmupStrategy) Signal(_ []data.DailyBar, idx int) strategy.Sig
 	return strategy.Hold
 }
 func (s portfolioWarmupStrategy) Score(_ []data.DailyBar, _ int) float64 { return 20 }
+
+type portfolioBuyOnlyStrategy struct{ name string }
+
+func (s portfolioBuyOnlyStrategy) Name() string { return s.name }
+func (s portfolioBuyOnlyStrategy) Warmup() int  { return 0 }
+func (s portfolioBuyOnlyStrategy) Signal(_ []data.DailyBar, idx int) strategy.SignalType {
+	if idx == 0 {
+		return strategy.Buy
+	}
+	return strategy.Hold
+}
+func (s portfolioBuyOnlyStrategy) Score(_ []data.DailyBar, _ int) float64 { return 20 }
 
 func portfolioBar(code, date string, price float64) data.DailyBar {
 	return data.DailyBar{

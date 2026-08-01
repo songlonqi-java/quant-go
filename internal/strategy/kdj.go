@@ -1,7 +1,6 @@
 package strategy
 
 import (
-	"fmt"
 	"sync"
 
 	"quant/internal/data"
@@ -13,8 +12,8 @@ type KDJ struct {
 	N     int     // 周期 9
 	KLow  float64 // 超卖线 20
 	DHigh float64 // 超买线 80
-	mu    sync.Mutex
-	cache kdjCache
+	mu    sync.RWMutex
+	cache map[kdjSeriesKey][]kdjPoint
 }
 
 func NewKDJ(n int, kLow, dHigh float64) *KDJ {
@@ -70,21 +69,24 @@ type kdjPoint struct {
 	d float64
 }
 
-type kdjCache struct {
-	key    string
-	series []kdjPoint
+type kdjSeriesKey struct {
+	first  *data.DailyBar
+	length int
 }
 
 func (k *KDJ) kdSeries(bars []data.DailyBar) []kdjPoint {
-	key := k.kdCacheKey(bars)
-
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	if k.cache.key == key && len(k.cache.series) == len(bars) {
-		return k.cache.series
+	if len(bars) == 0 {
+		return nil
+	}
+	key := kdjSeriesKey{first: &bars[0], length: len(bars)}
+	k.mu.RLock()
+	series := k.cache[key]
+	k.mu.RUnlock()
+	if series != nil {
+		return series
 	}
 
-	series := make([]kdjPoint, len(bars))
+	series = make([]kdjPoint, len(bars))
 	prevK, prevD := 50.0, 50.0
 	for idx := k.N; idx < len(bars); idx++ {
 		high := bars[idx].High
@@ -108,15 +110,14 @@ func (k *KDJ) kdSeries(bars []data.DailyBar) []kdjPoint {
 		prevK, prevD = curK, curD
 	}
 
-	k.cache = kdjCache{key: key, series: series}
-	return series
-}
-
-func (k *KDJ) kdCacheKey(bars []data.DailyBar) string {
-	if len(bars) == 0 {
-		return fmt.Sprintf("%d|empty", k.N)
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.cache == nil {
+		k.cache = make(map[kdjSeriesKey][]kdjPoint)
 	}
-	first := &bars[0]
-	last := bars[len(bars)-1]
-	return fmt.Sprintf("%d|%p|%d|%s|%s", k.N, first, len(bars), first.TradeDate, last.TradeDate)
+	if existing := k.cache[key]; existing != nil {
+		return existing
+	}
+	k.cache[key] = series
+	return series
 }

@@ -1,12 +1,24 @@
 package strategy
 
-import "quant/internal/data"
+import (
+	"sync"
+
+	"quant/internal/data"
+)
 
 // Parabolic SAR 抛物线止损反转
 // SAR从上方翻到下方 → 买入；SAR从下方翻到上方 → 卖出
 type ParabolicSAR struct {
-	AFStep   float64 // 加速因子步长 0.02
-	AFMax    float64 // 最大加速因子 0.2
+	AFStep float64 // 加速因子步长 0.02
+	AFMax  float64 // 最大加速因子 0.2
+
+	cacheMu sync.RWMutex
+	cache   map[sarSeriesKey][]float64
+}
+
+type sarSeriesKey struct {
+	first  *data.DailyBar
+	length int
 }
 
 func NewParabolicSAR(afStep, afMax float64) *ParabolicSAR {
@@ -53,6 +65,35 @@ func (p *ParabolicSAR) calcSAR(bars []data.DailyBar, idx int) float64 {
 	if idx < 2 {
 		return 0
 	}
+	if idx >= len(bars) {
+		idx = len(bars) - 1
+	}
+	if idx < 2 {
+		return 0
+	}
+	series := p.cachedSARSeries(bars)
+	return series[idx]
+}
+
+// cachedSARSeries calculates every prefix once. Historical portfolio replay
+// asks for the same immutable stock series at consecutive indexes; rebuilding
+// from day zero for every Signal and Score call makes that replay quadratic.
+func (p *ParabolicSAR) cachedSARSeries(bars []data.DailyBar) []float64 {
+	if len(bars) == 0 {
+		return nil
+	}
+	key := sarSeriesKey{first: &bars[0], length: len(bars)}
+	p.cacheMu.RLock()
+	series := p.cache[key]
+	p.cacheMu.RUnlock()
+	if series != nil {
+		return series
+	}
+
+	series = make([]float64, len(bars))
+	if len(bars) < 3 {
+		return p.storeSARSeries(key, series)
+	}
 
 	var sar, ep, af float64
 	var isLong bool
@@ -68,7 +109,7 @@ func (p *ParabolicSAR) calcSAR(bars []data.DailyBar, idx int) float64 {
 	}
 	af = p.AFStep
 
-	for i := 2; i <= idx; i++ {
+	for i := 2; i < len(bars); i++ {
 		if isLong {
 			if bars[i].Low < sar {
 				isLong = false
@@ -118,6 +159,20 @@ func (p *ParabolicSAR) calcSAR(bars []data.DailyBar, idx int) float64 {
 				sar = bars[i-1].High
 			}
 		}
+		series[i] = sar
 	}
-	return sar
+	return p.storeSARSeries(key, series)
+}
+
+func (p *ParabolicSAR) storeSARSeries(key sarSeriesKey, calculated []float64) []float64 {
+	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
+	if p.cache == nil {
+		p.cache = make(map[sarSeriesKey][]float64)
+	}
+	if existing := p.cache[key]; existing != nil {
+		return existing
+	}
+	p.cache[key] = calculated
+	return calculated
 }

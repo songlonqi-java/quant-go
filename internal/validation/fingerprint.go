@@ -10,12 +10,13 @@ import (
 	"sort"
 
 	"quant/internal/data"
+	"quant/internal/execution"
 	"quant/internal/strategy"
 )
 
 // decisionModelVersion is bumped whenever aggregation, qualification, or
 // execution semantics change without changing a strategy's public parameters.
-const decisionModelVersion = 2
+const decisionModelVersion = 8
 
 type strategyFingerprintEntry struct {
 	Name   string          `json:"name"`
@@ -24,6 +25,12 @@ type strategyFingerprintEntry struct {
 }
 
 func StrategyFingerprint(strategies []strategy.Strategy, commission, slippage float64) (string, error) {
+	return StrategyFingerprintWithExecution(strategies, commission, slippage, execution.LiquidityPolicy{}, 0)
+}
+
+// StrategyFingerprintWithExecution includes every configured assumption that
+// changes whether an order is feasible or what return it realizes.
+func StrategyFingerprintWithExecution(strategies []strategy.Strategy, commission, slippage float64, liquidity execution.LiquidityPolicy, referenceEquity float64) (string, error) {
 	entries := make([]strategyFingerprintEntry, 0, len(strategies))
 	for _, current := range strategies {
 		if current == nil {
@@ -49,8 +56,10 @@ func StrategyFingerprint(strategies []strategy.Strategy, commission, slippage fl
 		DecisionModelVersion int                        `json:"decision_model_version"`
 		Commission           float64                    `json:"commission"`
 		Slippage             float64                    `json:"slippage"`
+		Liquidity            execution.LiquidityPolicy  `json:"liquidity"`
+		ReferenceEquity      float64                    `json:"reference_equity_cny"`
 		Strategies           []strategyFingerprintEntry `json:"strategies"`
-	}{decisionModelVersion, commission, slippage, entries}
+	}{decisionModelVersion, commission, slippage, liquidity, referenceEquity, entries}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
@@ -60,10 +69,20 @@ func StrategyFingerprint(strategies []strategy.Strategy, commission, slippage fl
 }
 
 func (s *Store) ValidateCompatibility(strategies []strategy.Strategy, commission, slippage float64, codeMap map[string][]data.DailyBar, fundamentals *data.FundamentalStore, moneyflows *data.MoneyflowStore) error {
+	return s.ValidateCompatibilityWithExecution(strategies, commission, slippage, execution.LiquidityPolicy{}, 0, codeMap, nil, fundamentals, moneyflows)
+}
+
+func (s *Store) ValidateCompatibilityWithExecution(strategies []strategy.Strategy, commission, slippage float64, liquidity execution.LiquidityPolicy, referenceEquity float64, codeMap map[string][]data.DailyBar, stockInfos map[string]data.StockInfo, fundamentals *data.FundamentalStore, moneyflows *data.MoneyflowStore) error {
 	if s == nil {
 		return fmt.Errorf("历史验证证据为空")
 	}
-	expected, err := StrategyFingerprint(strategies, commission, slippage)
+	if s.Version != formatVersion {
+		return fmt.Errorf("历史验证版本 %d 不兼容，需要重新执行 validate build", s.Version)
+	}
+	if err := validateSamplingPolicy(s.Sampling); err != nil {
+		return err
+	}
+	expected, err := StrategyFingerprintWithExecution(strategies, commission, slippage, liquidity, referenceEquity)
 	if err != nil {
 		return err
 	}
@@ -73,7 +92,7 @@ func (s *Store) ValidateCompatibility(strategies []strategy.Strategy, commission
 	if s.StrategyFingerprint != expected {
 		return fmt.Errorf("历史验证证据与当前策略、费用或决策模型不兼容，需要重新执行 validate build")
 	}
-	expectedData := fingerprintData(codeMap, fundamentals, moneyflows)
+	expectedData := fingerprintDataWithStocks(codeMap, stockInfos, fundamentals, moneyflows)
 	if s.DataFingerprint != expectedData {
 		return fmt.Errorf("历史验证证据与当前行情数据不兼容，需要重新执行 validate build")
 	}
@@ -101,6 +120,10 @@ func latestFingerprintDate(codeMap map[string][]data.DailyBar) string {
 }
 
 func fingerprintData(codeMap map[string][]data.DailyBar, fundamentals *data.FundamentalStore, moneyflows *data.MoneyflowStore) string {
+	return fingerprintDataWithStocks(codeMap, nil, fundamentals, moneyflows)
+}
+
+func fingerprintDataWithStocks(codeMap map[string][]data.DailyBar, stockInfos map[string]data.StockInfo, fundamentals *data.FundamentalStore, moneyflows *data.MoneyflowStore) string {
 	h := sha256.New()
 	codes := make([]string, 0, len(codeMap))
 	for code := range codeMap {
@@ -121,6 +144,18 @@ func fingerprintData(codeMap map[string][]data.DailyBar, fundamentals *data.Fund
 				_, _ = h.Write(buf[:])
 			}
 		}
+	}
+	writeHashString(h, "stock_infos")
+	stockCodes := make([]string, 0, len(stockInfos))
+	for code := range stockInfos {
+		stockCodes = append(stockCodes, code)
+	}
+	sort.Strings(stockCodes)
+	for _, code := range stockCodes {
+		info := stockInfos[code]
+		writeHashString(h, code)
+		writeHashString(h, info.ListDate)
+		writeHashString(h, info.DelistDate)
 	}
 	writeHashString(h, "fundamentals")
 	writeHashString(h, fundamentals.Fingerprint())

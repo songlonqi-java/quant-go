@@ -1,10 +1,12 @@
 package validation
 
 import (
+	"math"
 	"path/filepath"
 	"testing"
 
 	"quant/internal/data"
+	"quant/internal/execution"
 	"quant/internal/signal"
 	"quant/internal/strategy"
 )
@@ -26,8 +28,8 @@ func TestBuildProducesOutOfSampleStatsWithFeasibleNextOpenEntry(t *testing.T) {
 		CodeMap: codeMap,
 		Strategies: []strategy.Strategy{
 			alwaysBuyStrategy{name: "donchian"},
-			alwaysBuyStrategy{name: "roc"},
-			alwaysBuyStrategy{name: "sar"},
+			alwaysBuyStrategy{name: "limit_up"},
+			alwaysBuyStrategy{name: "bull_flag"},
 		},
 		Workers: 2,
 	})
@@ -37,6 +39,13 @@ func TestBuildProducesOutOfSampleStatsWithFeasibleNextOpenEntry(t *testing.T) {
 	if store.FeasibleTrades == 0 {
 		t.Fatal("FeasibleTrades = 0, want feasible next-open outcomes")
 	}
+	if store.OverlappingSignals == 0 || store.EmbargoedSignals == 0 || store.PurgedSignals == 0 {
+		t.Fatalf("sampling filters not exercised: overlap=%d embargo=%d purged=%d",
+			store.OverlappingSignals, store.EmbargoedSignals, store.PurgedSignals)
+	}
+	if store.Sampling.ClusterUnit != "signal_date_equal_weight" || !store.Sampling.PurgeAtFoldEnd {
+		t.Fatalf("sampling policy = %#v", store.Sampling)
+	}
 	if store.StrategyFingerprint == "" || store.DataFingerprint == "" || store.BuildFingerprint == "" {
 		t.Fatalf("build fingerprints missing: %#v", store)
 	}
@@ -44,8 +53,15 @@ func TestBuildProducesOutOfSampleStatsWithFeasibleNextOpenEntry(t *testing.T) {
 	if !ok || stats.Samples == 0 {
 		t.Fatalf("short horizon stats missing: %#v", store.Stats)
 	}
+	if stats.Trades != 6 || stats.Samples != 3 || stats.Trades != store.FeasibleTrades {
+		t.Fatalf("clustered samples/trades = %d/%d, feasible=%d, want 3/6",
+			stats.Samples, stats.Trades, store.FeasibleTrades)
+	}
 	if stats.ExpectedReturnPct <= 0 || stats.PositiveFolds == 0 {
 		t.Fatalf("stats = %#v, want positive out-of-sample return", stats)
+	}
+	if store.ExitReasonCounts[string(execution.ExitReasonTimeStop)] != store.FeasibleTrades || store.WorstNetReturnPct <= 0 {
+		t.Fatalf("exit audit = reasons=%v worst=%.4f feasible=%d", store.ExitReasonCounts, store.WorstNetReturnPct, store.FeasibleTrades)
 	}
 
 	path := filepath.Join(t.TempDir(), "evidence.json")
@@ -58,6 +74,19 @@ func TestBuildProducesOutOfSampleStatsWithFeasibleNextOpenEntry(t *testing.T) {
 	}
 	if loaded.Stats["horizon|short"].Samples != stats.Samples {
 		t.Fatalf("loaded samples = %d, want %d", loaded.Stats["horizon|short"].Samples, stats.Samples)
+	}
+	if loaded.Stats["horizon|short"].Trades != stats.Trades || loaded.Sampling.ClusterUnit != store.Sampling.ClusterUnit {
+		t.Fatalf("loaded sampling metadata = %#v / %#v", loaded.Stats["horizon|short"], loaded.Sampling)
+	}
+}
+
+func TestLoadRejectsPreClusterEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence.json")
+	if err := (&Store{Version: formatVersion - 1, Stats: map[string]Stats{}}).Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("pre-cluster evidence should require rebuild")
 	}
 }
 
@@ -75,6 +104,7 @@ func TestStoreCompatibilityRejectsStrategyChangesAndStaleData(t *testing.T) {
 		EndDate:             codeMap["000001.SZ"][9].TradeDate,
 		StrategyFingerprint: fingerprint,
 		DataFingerprint:     dataFingerprint,
+		Sampling:            defaultSamplingPolicy(),
 	}
 	store.BuildFingerprint = fingerprintBuild(fingerprint, dataFingerprint, store.StartDate, store.EndDate, 0)
 	if err := store.ValidateCompatibility(strategies, 0.0003, 0.0001, codeMap, nil, nil); err != nil {
@@ -92,6 +122,74 @@ func TestStoreCompatibilityRejectsStrategyChangesAndStaleData(t *testing.T) {
 	if err := store.ValidateCompatibility(strategies, 0.0003, 0.0001, codeMap, nil, nil); err == nil {
 		t.Fatal("changed build fingerprint should invalidate evidence")
 	}
+	store.BuildFingerprint = fingerprintBuild(fingerprint, dataFingerprint, store.StartDate, store.EndDate, 0)
+	store.Sampling.ClusterUnit = "trade"
+	if err := store.ValidateCompatibility(strategies, 0.0003, 0.0001, codeMap, nil, nil); err == nil {
+		t.Fatal("changed sampling policy should invalidate evidence")
+	}
+}
+
+func TestStoreCompatibilityIncludesLiquidityAndStockMetadata(t *testing.T) {
+	strategies := []strategy.Strategy{alwaysBuyStrategy{name: "donchian"}}
+	codeMap := map[string][]data.DailyBar{"000001.SZ": risingBars("000001.SZ", 10)}
+	stockInfos := map[string]data.StockInfo{
+		"000001.SZ": {TsCode: "000001.SZ", Name: "平安银行", ListDate: "19910403"},
+	}
+	policy := execution.DefaultLiquidityPolicy()
+	fingerprint, err := StrategyFingerprintWithExecution(strategies, 0.0003, 0.0001, policy, 100_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataFingerprint := fingerprintDataWithStocks(codeMap, stockInfos, nil, nil)
+	store := &Store{
+		Version: formatVersion, StartDate: codeMap["000001.SZ"][0].TradeDate,
+		EndDate: codeMap["000001.SZ"][9].TradeDate, StrategyFingerprint: fingerprint,
+		DataFingerprint: dataFingerprint, Sampling: defaultSamplingPolicy(),
+	}
+	store.BuildFingerprint = fingerprintBuild(fingerprint, dataFingerprint, store.StartDate, store.EndDate, 0)
+	if err := store.ValidateCompatibilityWithExecution(strategies, 0.0003, 0.0001, policy, 100_000, codeMap, stockInfos, nil, nil); err != nil {
+		t.Fatalf("matching execution evidence rejected: %v", err)
+	}
+	changedPolicy := policy
+	changedPolicy.MaxParticipationPct = 3
+	if err := store.ValidateCompatibilityWithExecution(strategies, 0.0003, 0.0001, changedPolicy, 100_000, codeMap, stockInfos, nil, nil); err == nil {
+		t.Fatal("changed liquidity policy should invalidate evidence")
+	}
+	changedStocks := map[string]data.StockInfo{"000001.SZ": stockInfos["000001.SZ"]}
+	info := changedStocks["000001.SZ"]
+	info.ListDate = "19920403"
+	changedStocks["000001.SZ"] = info
+	if err := store.ValidateCompatibilityWithExecution(strategies, 0.0003, 0.0001, policy, 100_000, codeMap, changedStocks, nil, nil); err == nil {
+		t.Fatal("changed listing metadata should invalidate evidence")
+	}
+}
+
+func TestBuildAppliesLiquidityImpact(t *testing.T) {
+	codeMap := map[string][]data.DailyBar{"000001.SZ": risingBars("000001.SZ", 80)}
+	for i := range codeMap["000001.SZ"] {
+		codeMap["000001.SZ"][i].Amount = 100_000 // thousand CNY
+	}
+	policy := execution.DefaultLiquidityPolicy()
+	policy.MinListingDays = 0
+	policy.MinTurnoverRatePct = 0
+	store, err := Build(BuildOptions{
+		CodeMap: codeMap,
+		Strategies: []strategy.Strategy{
+			alwaysBuyStrategy{name: "donchian"},
+			alwaysBuyStrategy{name: "limit_up"},
+			alwaysBuyStrategy{name: "bull_flag"},
+		},
+		Liquidity: policy, ReferenceEquity: 100_000, Workers: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.FeasibleTrades == 0 || store.ImpactedTrades != store.FeasibleTrades {
+		t.Fatalf("liquidity audit = feasible %d impacted %d", store.FeasibleTrades, store.ImpactedTrades)
+	}
+	if store.AverageEntryImpactPct <= 0 || store.AverageExitImpactPct <= 0 || store.MaxParticipationPct <= 0 {
+		t.Fatalf("impact metrics missing: %#v", store)
+	}
 }
 
 func TestFeasibleReturnKeepsOpenEntryWhenTargetDayBreaksPreviousLow(t *testing.T) {
@@ -103,10 +201,29 @@ func TestFeasibleReturnKeepsOpenEntryWhenTargetDayBreaksPreviousLow(t *testing.T
 	}
 }
 
+func TestFeasibleReturnUsesSharedRoundTripCostModel(t *testing.T) {
+	bars := risingBars("000001.SZ", 8)
+	commission := 0.001
+	slippage := 0.002
+	got, ok := feasibleReturn(bars, 1, strategy.HorizonShort, commission, slippage, "")
+	if !ok {
+		t.Fatal("feasibleReturn() = not ok")
+	}
+	// Five closes are observed after entry; the time stop is confirmed on
+	// bars[6] and executed at the following open.
+	want, ok := execution.RoundTripReturn(bars[2].TradeOpen(), bars[7].TradeOpen(), execution.CostModel{
+		Commission: commission,
+		Slippage:   slippage,
+	})
+	if !ok || math.Abs(got-want.NetReturnPct) > 1e-9 {
+		t.Fatalf("feasibleReturn() = %.9f, shared model = %+v", got, want)
+	}
+}
+
 func TestAnnotateAndAllocateUseEvidenceEligibility(t *testing.T) {
 	store := &Store{Version: formatVersion, Stats: map[string]Stats{
 		"exact|short|偏多|donchian+roc+sar": {
-			Samples: 40, Wins: 24, ExpectedReturnPct: 2, VolatilityPct: 3,
+			Trades: 80, Samples: 40, Wins: 24, ExpectedReturnPct: 2, VolatilityPct: 3,
 			AverageWinPct: 4, AverageLossPct: -2, MaxDrawdownPct: -8,
 			PositiveFolds: 3, FoldCount: 3,
 		},
@@ -124,12 +241,152 @@ func TestAnnotateAndAllocateUseEvidenceEligibility(t *testing.T) {
 	if results[0].HistoricalEvidence == nil || !results[0].HistoricalEvidence.Eligible {
 		t.Fatalf("evidence = %#v, want eligible", results[0].HistoricalEvidence)
 	}
+	if !results[0].HistoricalEvidence.StrategySpecific {
+		t.Fatalf("evidence must be strategy-specific: %#v", results[0].HistoricalEvidence)
+	}
+	if results[0].HistoricalEvidence.PriorBasis != "" || results[0].HistoricalEvidence.PriorWeight != 20 {
+		t.Fatalf("neutral prior metadata = %#v", results[0].HistoricalEvidence)
+	}
+	if results[0].HistoricalEvidence.Trades != 80 || results[0].HistoricalEvidence.Samples != 40 {
+		t.Fatalf("evidence counts = %#v", results[0].HistoricalEvidence)
+	}
 	results = Allocate(results)
 	if got := results[0].HistoricalEvidence.SuggestedWeightPct; got <= 0 || got > 100 {
 		t.Fatalf("SuggestedWeightPct = %.2f, want (0,100]", got)
 	}
 	if results[0].PositionPct > 10 {
 		t.Fatalf("PositionPct = %.2f, must not exceed strategy cap", results[0].PositionPct)
+	}
+}
+
+func TestAnnotateNeverPromotesPeriodOnlyPrior(t *testing.T) {
+	store := &Store{Version: formatVersion, Stats: map[string]Stats{
+		"regime|short|偏多": {
+			Trades: 200, Samples: 100, Wins: 80, ExpectedReturnPct: 5,
+			PositiveFolds: 3, FoldCount: 3,
+		},
+		"horizon|short": {
+			Trades: 300, Samples: 150, Wins: 120, ExpectedReturnPct: 4,
+			PositiveFolds: 3, FoldCount: 3,
+		},
+	}}
+	results := Annotate([]signal.SignalResult{validationCandidate()}, store, DefaultPolicy(), true)
+	evidence := results[0].HistoricalEvidence
+	if evidence == nil || !evidence.Available || evidence.StrategySpecific || evidence.Eligible {
+		t.Fatalf("period prior must be visible but ineligible: %#v", evidence)
+	}
+	if evidence.Status != "仅有周期先验，不能用于正式资格" || evidence.Basis != "同周期 + 同市场状态（仅先验）" {
+		t.Fatalf("period prior status = %#v", evidence)
+	}
+}
+
+func TestAnnotateBroadPriorCannotRescueLosingExactEvidence(t *testing.T) {
+	store := &Store{Version: formatVersion, Stats: map[string]Stats{
+		"exact|short|偏多|donchian+roc+sar": {
+			Trades: 80, Samples: 40, Wins: 20, ExpectedReturnPct: -1,
+			PositiveFolds: 2, FoldCount: 3,
+		},
+		"regime|short|偏多": {
+			Trades: 200, Samples: 100, Wins: 80, ExpectedReturnPct: 5,
+			PositiveFolds: 3, FoldCount: 3,
+		},
+	}}
+	results := Annotate([]signal.SignalResult{validationCandidate()}, store, DefaultPolicy(), true)
+	evidence := results[0].HistoricalEvidence
+	if evidence == nil || !evidence.StrategySpecific || evidence.Eligible {
+		t.Fatalf("losing exact evidence must remain ineligible: %#v", evidence)
+	}
+	if evidence.ExpectedReturnPct <= 0 || evidence.PriorBasis != "同周期 + 同市场状态" || evidence.PriorSamples != 100 {
+		t.Fatalf("prior audit fields or rescue guard missing: %#v", evidence)
+	}
+}
+
+func TestAnnotateDoesNotBypassSparseExactRegimeWithSignature(t *testing.T) {
+	store := &Store{Version: formatVersion, Stats: map[string]Stats{
+		"exact|short|偏多|donchian+roc+sar": {
+			Trades: 4, Samples: 2, Wins: 2, ExpectedReturnPct: 3,
+			PositiveFolds: 1, FoldCount: 1,
+		},
+		"signature|short|donchian+roc+sar": {
+			Trades: 100, Samples: 50, Wins: 35, ExpectedReturnPct: 2,
+			PositiveFolds: 3, FoldCount: 3,
+		},
+	}}
+	results := Annotate([]signal.SignalResult{validationCandidate()}, store, DefaultPolicy(), true)
+	evidence := results[0].HistoricalEvidence
+	if evidence == nil || evidence.Basis != "同策略组合 + 同市场状态" || evidence.Samples != 2 || evidence.Eligible {
+		t.Fatalf("sparse current-regime evidence must not be bypassed: %#v", evidence)
+	}
+}
+
+func TestAnnotateUsesSignatureWhenNoExactRegimeEvidenceExists(t *testing.T) {
+	store := &Store{Version: formatVersion, Stats: map[string]Stats{
+		"signature|short|donchian+roc+sar": {
+			Trades: 100, Samples: 50, Wins: 35, ExpectedReturnPct: 2,
+			PositiveFolds: 3, FoldCount: 3,
+		},
+		"horizon|short": {
+			Trades: 200, Samples: 100, Wins: 60, ExpectedReturnPct: 1,
+			PositiveFolds: 3, FoldCount: 3,
+		},
+	}}
+	results := Annotate([]signal.SignalResult{validationCandidate()}, store, DefaultPolicy(), true)
+	evidence := results[0].HistoricalEvidence
+	if evidence == nil || evidence.Basis != "同策略组合" || !evidence.StrategySpecific || !evidence.Eligible {
+		t.Fatalf("signature evidence = %#v, want eligible", evidence)
+	}
+}
+
+func TestEffectivePriorWeightNeverExceedsAvailableDates(t *testing.T) {
+	if got := effectivePriorWeight(20, Stats{Samples: 5}, true); got != 5 {
+		t.Fatalf("prior weight = %.0f, want 5", got)
+	}
+	if got := effectivePriorWeight(20, Stats{}, false); got != 20 {
+		t.Fatalf("neutral prior weight = %.0f, want 20", got)
+	}
+}
+
+func validationCandidate() signal.SignalResult {
+	return signal.SignalResult{
+		Horizon: strategy.HorizonShort, MarketSentiment: "偏多", BuyCount: 3,
+		TotalScore: 2, Confidence: 80, PositionPct: 10,
+		Strategies: map[string]signal.SignalDetail{
+			"donchian": {Signal: strategy.Buy},
+			"roc":      {Signal: strategy.Buy},
+			"sar":      {Signal: strategy.Buy},
+		},
+	}
+}
+
+func TestSummarizeUsesEqualWeightSignalDateClusters(t *testing.T) {
+	stats := summarize([]observation{
+		{date: "20250102", code: "000001.SZ", ret: 2, fold: 1},
+		{date: "20250102", code: "000002.SZ", ret: 4, fold: 1},
+		{date: "20250103", code: "000001.SZ", ret: -1, fold: 2},
+		{date: "20250103", code: "000002.SZ", ret: -3, fold: 2},
+	}, 2)
+	if stats.Trades != 4 || stats.Samples != 2 || stats.Wins != 1 {
+		t.Fatalf("clustered counts = %#v", stats)
+	}
+	if stats.ExpectedReturnPct != 0.5 || stats.WinRatePct != 50 {
+		t.Fatalf("clustered returns = %#v", stats)
+	}
+	if stats.PositiveFolds != 1 || stats.FoldCount != 2 {
+		t.Fatalf("clustered folds = %#v", stats)
+	}
+}
+
+func TestSamplingPolicyMatchesHoldingWindows(t *testing.T) {
+	policy := defaultSamplingPolicy()
+	if policy.IndependenceKey != "stock+horizon" || len(policy.HorizonRules) != 3 {
+		t.Fatalf("policy = %#v", policy)
+	}
+	for _, rule := range policy.HorizonRules {
+		if rule.HoldingTradingDays != horizonDays(rule.Horizon) ||
+			rule.CooldownTradingDays != rule.HoldingTradingDays ||
+			rule.EmbargoTradingDays != rule.HoldingTradingDays {
+			t.Fatalf("rule = %#v", rule)
+		}
 	}
 }
 

@@ -64,6 +64,7 @@ func (e *HistoricalEvaluator) Evaluate(bars []data.DailyBar, idx int, name strin
 		if r.BuyCount == 0 && r.SellCount == 0 {
 			continue
 		}
+		applyEffectiveVotes(&r)
 		r.RawScore = cappedGroupScore(r.GroupScores)
 		r.TotalScore = applyMarketAdjustment(r.RawScore, marketStatus)
 		r.Confidence = confidenceScore(r)
@@ -73,5 +74,6 @@ func (e *HistoricalEvaluator) Evaluate(bars []data.DailyBar, idx int, name strin
 		applyMoneyflowContext(&r, moneyflows)
 		results = append(results, r)
 	}
+	ApplyRiskPolicy(results)
 	return results
 }

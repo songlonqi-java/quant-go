@@ -25,20 +25,21 @@ func ApplyRealtimeQuotes(results []SignalResult, quotes map[string]realtime.Quot
 			results[i].Reasons = append(results[i].Reasons, fmt.Sprintf("盘中: %s", joinLabels(results[i].IntradayLabels)))
 		}
 	}
+	RefreshRiskPolicy(results)
 }
 
 func intradayLabels(r SignalResult, q realtime.Quote, limitStore *data.StkLimitStore) []string {
 	labels := make([]string, 0, 4)
 	limitUp, limitDown := realtimeLimitStatus(q, limitStore)
-	if limitUp {
-		labels = append(labels, "涨停风险")
-	}
-	if limitDown {
-		labels = append(labels, "跌停风险")
-	}
 
 	switch r.Recommendation() {
 	case "买入":
+		if limitUp {
+			labels = append(labels, "涨停风险")
+		}
+		if limitDown {
+			labels = append(labels, "跌停风险")
+		}
 		if q.PrevClose > 0 && (q.Open/q.PrevClose-1)*100 > 3 {
 			labels = append(labels, "高开>3%")
 		}
@@ -49,6 +50,9 @@ func intradayLabels(r SignalResult, q realtime.Quote, limitStore *data.StkLimitS
 			labels = append(labels, "盘中走弱")
 		}
 	case "卖出":
+		if limitDown {
+			labels = append(labels, "跌停风险")
+		}
 		if q.ChangePct < -3 && !limitDown {
 			labels = append(labels, "卖压确认")
 		}

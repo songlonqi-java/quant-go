@@ -22,6 +22,7 @@ type Dataset struct {
 	AllCodeMap        map[string][]data.DailyBar
 	CodeMap           map[string][]data.DailyBar
 	StockNames        map[string]string
+	StockInfos        map[string]data.StockInfo
 	Fundamentals      *data.FundamentalStore
 	StkLimits         *data.StkLimitStore
 	Moneyflows        *data.MoneyflowStore
@@ -49,11 +50,13 @@ func Load(opts LoadOptions) (*Dataset, error) {
 	sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
 
 	allCodeMap := sortedCodeMap(bars)
+	stockPath := filepath.Join(opts.RawDir, "stocks.parquet")
 	ds := &Dataset{
 		Bars:         bars,
 		AllCodeMap:   allCodeMap,
 		CodeMap:      cloneCodeMap(allCodeMap),
-		StockNames:   data.LoadStockNames(filepath.Join(opts.RawDir, "stocks.parquet")),
+		StockNames:   data.LoadStockNames(stockPath),
+		StockInfos:   data.LoadStockInfos(stockPath),
 		StkLimits:    stkLimits,
 		TradingDates: data.LoadTradeDates(opts.RawDir, bars),
 	}

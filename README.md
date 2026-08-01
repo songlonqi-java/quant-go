@@ -10,7 +10,7 @@ Go 语言 A 股量化工具 — 数据拉取 · 策略回测 · 信号生成 · 
 - **信号生成**：按短线/中线/长线分别聚合打分 → 正式买卖排名 + 观察机会榜，输出 table/csv/json
 - **盘中校验**：东方财富实时行情为主、新浪限速降级，覆盖候选股和持仓现价并提示交易可行性风险
 - **回测引擎**：佣金/滑点建模，Sharpe/MaxDD/Calmar/胜率/盈亏比
-- **历史验证**：全策略链路样本外回放，为正式推荐提供可成交样本、胜率、期望收益与权重依据
+- **历史验证**：全策略链路样本外回放，使用不重叠信号窗口、时间折 embargo 和同日收益聚类，为正式推荐提供胜率、期望收益与权重依据
 - **市场概况**：指数趋势 + 市场宽度 + 板块热度
 - **新闻热度**：新浪财经免费爬取 + 关键词提取 + 股票匹配
 - **持仓管理**：交易流水格式，自动计算持仓盈亏和历史胜率
@@ -30,7 +30,7 @@ go build -o go-quant ./cmd/go-quant/
 ./go-quant fetch                    # 日线行情
 ./go-quant fetch --stk-limit        # 每日涨跌停价格
 ./go-quant fetch --moneyflow        # 个股资金流向
-./go-quant fetch --daily-basic      # PE/PB/市值
+./go-quant fetch --daily-basic      # PE/PB/市值/换手率（流动性校验）
 ./go-quant fetch --financials       # 财务数据
 ./go-quant fetch --hs300            # 沪深300
 ./go-quant fetch --index            # 指数数据
@@ -48,7 +48,7 @@ go build -o go-quant ./cmd/go-quant/
 
 # 5. 查看信号
 ./go-quant signal -n 5 --watch 15 # 每个周期买入/卖出各最多5条，额外显示15条观察机会
-./go-quant forward validate       # 回填前向测试收益
+./go-quant forward validate       # 回填固定观察期及有状态退出的毛收益、成本和净收益
 ./go-quant forward migrate        # 迁移旧版前向测试CSV
 
 # 盘中查看全市场宽度（均匀分批请求，默认约1分钟完成）
@@ -70,7 +70,7 @@ go build -o quant-web ./cmd/quant-web/
 | `./go-quant validate build` | 回放完整推荐链路，生成样本外验证证据 |
 | `./go-quant value monthly` | 月度生成并持久化价值候选池 |
 | `./go-quant value quarterly` | 季度复核价值候选池的基本面和估值回归 |
-| `./go-quant forward validate` | 回填前向测试 1/3/5 日收益 |
+| `./go-quant forward validate` | 回填固定观察期及有状态退出的毛收益、双边成本和净收益 |
 | `./go-quant forward migrate` | 迁移旧版前向测试 CSV schema |
 | `./go-quant list` | 查看所有策略 |
 | `./quant-web` | 本地页面：启动日终任务并查看报告 |
@@ -79,15 +79,15 @@ go build -o quant-web ./cmd/quant-web/
 
 ## 策略
 
-`signal` 输出会按交易周期分成三段：短线看明日到 5 个交易日，中线看 2 到 8 周，长线看数月以上趋势持有。信号输出前还会先给出仓位策略：`空仓`、`观望`、`轻仓试错` 或 `正常买入`，避免市场不明确时强行推荐股票。日常信号不使用 PE、PE_TTM、PB、ROE 和分红数据；这些慢频基本面条件由独立的 `value monthly` / `value quarterly` 任务处理。首次使用、策略调整或补齐历史数据后先执行 `validate build`；当本地验证证据存在时，只有达到样本量、跨时间折数和收缩后期望收益门槛的候选，才能成为正式买入。`--watch` 会额外列出观察机会，只作为跟踪池，不等同于正式买入推荐。
+`signal` 输出会按交易周期分成三段：短线看明日到 5 个交易日，中线看 2 到 8 周，长线看数月以上趋势持有。相关指标不会重复按完整票数制造共识：系统展示原始信号数，但使用按策略家族折扣后的有效票和独立组数决定方向、置信度与正式资格。回测和验证统一使用初始止损、ATR 移动止损及短/中/长线 5/20/120 日时间止损，收盘触发后在下个可交易开盘卖出并记录跌停延迟。买入还会统一检查上市天数、ST/停牌、20 日平均成交额、换手率和订单成交占比；回测、历史证据与前向验证按成交占比计入平方根冲击成本。订单规模由 `portfolio.reference_equity × 建议仓位` 估算。风险标签统一显示为硬过滤、置信度/仓位扣分或仅提示，报告含义与真实资格规则一致。信号输出前还会先给出仓位策略：`空仓`、`观望`、`轻仓试错` 或 `正常买入`，避免市场不明确时强行推荐股票。日常信号不使用 PE、PE_TTM、PB、ROE 和分红条件；`daily_basic` 中的换手率只用于流动性校验，估值条件仍由独立的 `value monthly` / `value quarterly` 任务处理。首次使用、策略调整或补齐历史数据后先执行 `validate build`；当本地验证证据存在时，只有达到独立日期簇样本量、跨时间折数和收缩后期望收益门槛的候选，才能成为正式买入。`--watch` 会额外列出观察机会，只作为跟踪池，不等同于正式买入推荐。
 
 | 类型 | 策略 | 说明 |
 |------|------|------|
 | 短线 | `limit_up` `sar` `kdj` `roc` `williams_r` `rsi` `mfi` `bull_flag` `bollinger` `donchian` `volume_breakout` `bottom_reversal` | 1-21 天周期 |
-| 中线 | `ma_crossover` `etf_rotation` `macd` `ma_sticky` `value_ma60` `relative_strength` `atr_breakout` `trend_pullback` | 20-120 天周期 |
+| 中线 | `ma_crossover` `etf_rotation` `macd` `ma_sticky` `value_ma60` `relative_strength` `market_neutral_momentum` `atr_breakout` `trend_pullback` | 20-120 天周期；`market_neutral_momentum` 为实验策略，默认不启用 |
 | 长线 | `dividend_deviation` `quality_value` `earnings_growth` | 120-600 天周期 |
 
-详见 [docs/strategies.md](docs/strategies.md)
+详见 [docs/strategies.md](docs/strategies.md)。实验策略先用 `backtest --ensemble --ablation <策略名>` 与当前默认组合做净收益、回撤、换手和跨年稳定性对比，不会因为完成代码就自动进入日终推荐。
 
 策略正确性审计和修复优先级见 [docs/strategy-audit.md](docs/strategy-audit.md)。
 
@@ -125,8 +125,8 @@ quant-go/
 ├── internal/
 │   ├── config/                 # 配置管理
 │   ├── data/                   # Tushare API + Parquet 存储
-│   ├── strategy/               # 23 个策略实现
-│   ├── backtest/               # 回测引擎 + 绩效指标
+│   ├── strategy/               # 24 个策略实现（含 1 个实验策略）
+│   ├── backtest/               # 回测引擎 + 绩效指标 + 策略消融
 │   ├── signal/                 # 多策略信号聚合
 │   ├── validation/             # 样本外推荐资格验证与权重证据
 │   ├── market/                 # 市场情绪分析

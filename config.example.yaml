@@ -22,6 +22,19 @@ backtest:
   risk_free_rate: 0.03
   lot_size: 100
 
+# 买入资格与冲击成本。daily.amount 的原始单位由程序统一换算为人民币；
+# 换手率需要先拉取 daily-basic，缺失时默认只提示、不阻断。
+liquidity:
+  enabled: true
+  min_listing_days: 60
+  amount_lookback: 20
+  min_average_amount_cny: 20000000
+  min_turnover_rate_pct: 0.5
+  require_turnover_data: false
+  max_participation_pct: 5
+  impact_coefficient: 0.005
+  max_impact_rate: 0.02
+
 signal:
   default_strategies:
     - ma_crossover
@@ -53,14 +66,15 @@ portfolio:
 
 # 正式买入候选需要有历史样本外证据。先运行
 # ./go-quant validate build
-# 生成 data/raw/validation/evidence.json。
+# 生成 data/raw/validation/evidence.json。min_samples 指独立信号日期簇数，
+# 同日多只股票不会重复增加该数字。
 validation:
   enabled: true
   path: "validation/evidence.json"
   min_samples: 30
   min_positive_folds: 2
   min_expected_return_pct: 0
-  prior_samples: 20
+  prior_samples: 20          # 同周期宽泛先验的最大等效样本权重
 
 ai:
   enabled: false
