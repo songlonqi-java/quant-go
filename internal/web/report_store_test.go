@@ -14,6 +14,7 @@ import (
 
 	"quant/internal/config"
 	"quant/internal/portfolio"
+	"quant/internal/value"
 )
 
 func TestFinishPersistsIndexedReportAndImmutablePortfolioSnapshot(t *testing.T) {
@@ -118,7 +119,7 @@ func TestReportCenterRendersListAndDetail(t *testing.T) {
 	server, err := newServer(Options{
 		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath)}},
 		DatabasePath: dbPath,
-	}, func(context.Context, func(string)) (*DailyReport, error) { return &DailyReport{}, nil })
+	}, func(context.Context, string, func(string)) (*DailyReport, error) { return &DailyReport{}, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,5 +148,64 @@ func TestReportCenterRendersListAndDetail(t *testing.T) {
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "20260731") {
 			t.Fatalf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestValueReportFactoriesKeepValueWorkflowSeparate(t *testing.T) {
+	monthly := reportFromValueMonthly(&value.MonthlyReport{
+		Kind: "monthly_screen", ScreenDate: "20260731", Policy: value.DefaultPolicy(),
+		Scanned: 100, Qualified: 2,
+	})
+	if monthly.ValueMonthly == nil || monthly.ValueQuarterly != nil || monthly.Version != "value-monthly-report-v1" || monthly.StrategyVersion != "value-v1" {
+		t.Fatalf("monthly=%+v", monthly)
+	}
+	quarterly := reportFromValueQuarterly(&value.QuarterlyReport{
+		Kind: "quarterly_review", ReviewDate: "20260731", Policy: value.DefaultPolicy(),
+	})
+	if quarterly.ValueQuarterly == nil || quarterly.ValueMonthly != nil || quarterly.Version != "value-quarterly-report-v1" {
+		t.Fatalf("quarterly=%+v", quarterly)
+	}
+}
+
+func TestValueTaskRendersDedicatedReport(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "web.db")
+	server, err := newServer(Options{
+		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath), RawDir: t.TempDir()}},
+		DatabasePath: dbPath,
+	}, func(_ context.Context, kind string, _ func(string)) (*DailyReport, error) {
+		if kind != taskKindValueMonthly {
+			t.Fatalf("kind=%s", kind)
+		}
+		return reportFromValueMonthly(&value.MonthlyReport{
+			Kind: "monthly_screen", ScreenDate: "20260731", Policy: value.DefaultPolicy(), Scanned: 10, Qualified: 1,
+		}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	task, err := server.runner.enqueueKind(context.Background(), taskKindValueMonthly, "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stored, err := server.store.task(context.Background(), task.ID, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status == TaskSucceeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task not completed: %+v", stored)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/tasks/"+strconv.FormatInt(task.ID, 10), nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "月度价值筛选") || !strings.Contains(response.Body.String(), "候选池只用于跟踪") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

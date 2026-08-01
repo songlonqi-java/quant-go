@@ -147,7 +147,7 @@ func TestTaskRunnerConvertsPanicToFailedTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := newTaskRunner(store, func(context.Context, func(string)) (*DailyReport, error) {
+	runner := newTaskRunner(store, func(context.Context, string, func(string)) (*DailyReport, error) {
 		panic("boom")
 	})
 	runner.start()
@@ -184,7 +184,7 @@ func TestServerCreatesAndRendersDailyReport(t *testing.T) {
 	server, err := newServer(Options{
 		Config:       &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath)}},
 		DatabasePath: dbPath,
-	}, func(_ context.Context, progress func(string)) (*DailyReport, error) {
+	}, func(_ context.Context, _ string, progress func(string)) (*DailyReport, error) {
 		progress("测试任务已完成")
 		return &DailyReport{
 			TargetDate: "20260731",

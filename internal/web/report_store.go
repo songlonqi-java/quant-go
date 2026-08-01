@@ -38,9 +38,13 @@ type ReportRecord struct {
 	Report               *DailyReport
 }
 
-func persistReport(ctx context.Context, tx *sql.Tx, taskID int64, kind string, report *DailyReport, createdAt string) error {
+func persistReport(ctx context.Context, tx *sql.Tx, taskID int64, report *DailyReport, createdAt string) error {
 	if report == nil {
 		return nil
+	}
+	var kind string
+	if err := tx.QueryRowContext(ctx, `SELECT kind FROM web_tasks WHERE id = ?`, taskID).Scan(&kind); err != nil {
+		return err
 	}
 	var snapshotID any
 	if report.SnapshotLedger != nil {

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-type taskExecutor func(context.Context, func(string)) (*DailyReport, error)
+type taskExecutor func(context.Context, string, func(string)) (*DailyReport, error)
 
 // taskRunner is the only writer of market-data tasks in the Web process. Its
 // small interface (enqueue plus persisted task state) hides queue wake-ups,
@@ -40,7 +40,11 @@ func (r *taskRunner) start() {
 }
 
 func (r *taskRunner) enqueue(ctx context.Context) (*Task, error) {
-	task, err := r.store.createDaily(ctx)
+	return r.enqueueKind(ctx, taskKindDaily, "manual")
+}
+
+func (r *taskRunner) enqueueKind(ctx context.Context, kind, source string) (*Task, error) {
+	task, err := r.store.createTask(ctx, kind, source)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +84,7 @@ func (r *taskRunner) loop() {
 				if task == nil {
 					break
 				}
-				report, runErr := r.runSafely(func(message string) {
+				report, runErr := r.runSafely(task.Kind, func(message string) {
 					for r.ctx.Err() == nil {
 						if err := r.store.updateProgress(r.ctx, task.ID, message); err == nil {
 							return
@@ -118,13 +122,13 @@ func (r *taskRunner) persistFinish(taskID int64, report *DailyReport, runErr err
 	}
 }
 
-func (r *taskRunner) runSafely(update func(string)) (report *DailyReport, err error) {
+func (r *taskRunner) runSafely(kind string, update func(string)) (report *DailyReport, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("任务执行异常: %v", recovered)
 		}
 	}()
-	return r.execute(r.ctx, update)
+	return r.execute(r.ctx, kind, update)
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) bool {

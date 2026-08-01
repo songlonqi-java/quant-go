@@ -13,7 +13,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const taskKindDaily = "daily"
+const (
+	taskKindDaily          = "daily"
+	taskKindValueMonthly   = "value_monthly"
+	taskKindValueQuarterly = "value_quarterly"
+)
 
 type TaskStatus string
 
@@ -27,16 +31,26 @@ const (
 var ErrTaskAlreadyActive = errors.New("已有日终任务正在排队或运行")
 
 type Task struct {
-	ID         int64
-	Kind       string
-	Status     TaskStatus
-	CreatedAt  string
-	StartedAt  string
-	FinishedAt string
-	Message    string
-	Error      string
-	Report     *DailyReport
-	Events     []TaskEvent
+	ID            int64
+	Kind          string
+	TriggerSource string
+	Status        TaskStatus
+	CreatedAt     string
+	StartedAt     string
+	FinishedAt    string
+	Message       string
+	Error         string
+	Report        *DailyReport
+	Events        []TaskEvent
+}
+
+func validTaskKind(kind string) bool {
+	switch kind {
+	case taskKindDaily, taskKindValueMonthly, taskKindValueQuarterly:
+		return true
+	default:
+		return false
+	}
 }
 
 type TaskEvent struct {
@@ -174,6 +188,30 @@ var schemaMigrations = []schemaMigration{
 			FROM web_tasks WHERE report_json <> '';
 		`,
 	},
+	{
+		version: 4,
+		name:    "task kinds and local schedules",
+		sql: `
+			ALTER TABLE web_tasks ADD COLUMN trigger_source TEXT NOT NULL DEFAULT 'manual';
+			CREATE TABLE IF NOT EXISTS web_schedules (
+				kind TEXT PRIMARY KEY,
+				enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
+				hour INTEGER NOT NULL CHECK(hour BETWEEN 0 AND 23),
+				minute INTEGER NOT NULL CHECK(minute BETWEEN 0 AND 59),
+				day_of_month INTEGER NOT NULL DEFAULT 1 CHECK(day_of_month BETWEEN 1 AND 28),
+				months TEXT NOT NULL DEFAULT '',
+				timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+				last_enqueued_period TEXT NOT NULL DEFAULT '',
+				updated_at TEXT NOT NULL
+			);
+			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at)
+				VALUES('daily', 0, 17, 0, 1, '', CURRENT_TIMESTAMP);
+			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at)
+				VALUES('value_monthly', 0, 18, 0, 1, '', CURRENT_TIMESTAMP);
+			INSERT OR IGNORE INTO web_schedules(kind, enabled, hour, minute, day_of_month, months, updated_at)
+				VALUES('value_quarterly', 0, 19, 0, 1, '1,4,7,10', CURRENT_TIMESTAMP);
+		`,
+	},
 }
 
 func openTaskStore(path string) (*taskStore, error) {
@@ -240,6 +278,16 @@ func (s *taskStore) migrate(ctx context.Context) error {
 }
 
 func (s *taskStore) createDaily(ctx context.Context) (*Task, error) {
+	return s.createTask(ctx, taskKindDaily, "manual")
+}
+
+func (s *taskStore) createTask(ctx context.Context, kind, source string) (*Task, error) {
+	if !validTaskKind(kind) {
+		return nil, fmt.Errorf("不支持的任务类型: %s", kind)
+	}
+	if source == "" {
+		source = "manual"
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -247,11 +295,11 @@ func (s *taskStore) createDaily(ctx context.Context) (*Task, error) {
 	defer tx.Rollback()
 	now := timestamp()
 	result, err := tx.ExecContext(ctx, `
-		INSERT INTO web_tasks(kind, status, created_at, message)
-		SELECT ?, ?, ?, ?
+		INSERT INTO web_tasks(kind, status, created_at, message, trigger_source)
+		SELECT ?, ?, ?, ?, ?
 		WHERE NOT EXISTS (
 			SELECT 1 FROM web_tasks WHERE kind = ? AND status IN (?, ?)
-		)`, taskKindDaily, TaskQueued, now, "任务已进入队列", taskKindDaily, TaskQueued, TaskRunning)
+		)`, kind, TaskQueued, now, "任务已进入队列", source, kind, TaskQueued, TaskRunning)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +314,7 @@ func (s *taskStore) createDaily(ctx context.Context) (*Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := addEvent(ctx, tx, id, now, "已创建日终任务"); err != nil {
+	if err := addEvent(ctx, tx, id, now, fmt.Sprintf("已创建%s任务（%s）", taskKindLabel(kind), source)); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -405,7 +453,7 @@ func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyRepor
 		return err
 	}
 	if report != nil {
-		if err := persistReport(ctx, tx, taskID, taskKindDaily, report, now); err != nil {
+		if err := persistReport(ctx, tx, taskID, report, now); err != nil {
 			return err
 		}
 	}
@@ -420,7 +468,7 @@ func (s *taskStore) finish(ctx context.Context, taskID int64, report *DailyRepor
 
 func (s *taskStore) task(ctx context.Context, id int64, withEvents bool) (*Task, error) {
 	task, err := scanTask(s.db.QueryRowContext(ctx, `
-		SELECT id, kind, status, created_at, started_at, finished_at, message, error, report_json
+		SELECT id, kind, trigger_source, status, created_at, started_at, finished_at, message, error, report_json
 		FROM web_tasks WHERE id = ?`, id))
 	if err != nil {
 		return nil, err
@@ -440,7 +488,7 @@ func (s *taskStore) list(ctx context.Context, limit int) ([]Task, error) {
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, status, created_at, started_at, finished_at, message, error, report_json
+		SELECT id, kind, trigger_source, status, created_at, started_at, finished_at, message, error, report_json
 		FROM web_tasks ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -499,7 +547,7 @@ type taskScanner interface {
 func scanTask(scanner taskScanner) (*Task, error) {
 	var task Task
 	var reportJSON string
-	if err := scanner.Scan(&task.ID, &task.Kind, &task.Status, &task.CreatedAt, &task.StartedAt,
+	if err := scanner.Scan(&task.ID, &task.Kind, &task.TriggerSource, &task.Status, &task.CreatedAt, &task.StartedAt,
 		&task.FinishedAt, &task.Message, &task.Error, &reportJSON); err != nil {
 		return nil, err
 	}
@@ -511,6 +559,19 @@ func scanTask(scanner taskScanner) (*Task, error) {
 		task.Report = &report
 	}
 	return &task, nil
+}
+
+func taskKindLabel(kind string) string {
+	switch kind {
+	case taskKindDaily:
+		return "日终分析"
+	case taskKindValueMonthly:
+		return "月度价值筛选"
+	case taskKindValueQuarterly:
+		return "季度价值复核"
+	default:
+		return kind
+	}
 }
 
 func timestamp() string {

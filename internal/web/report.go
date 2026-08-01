@@ -14,6 +14,7 @@ import (
 	"quant/internal/news"
 	"quant/internal/portfolio"
 	"quant/internal/signal"
+	"quant/internal/value"
 	"quant/internal/workflow/daily"
 )
 
@@ -42,6 +43,36 @@ type DailyReport struct {
 	StrategyVersion string                     `json:"strategy_version,omitempty"`
 	DataVersion     string                     `json:"data_version,omitempty"`
 	SnapshotLedger  []portfolio.Transaction    `json:"-"`
+	ValueMonthly    *value.MonthlyReport       `json:"value_monthly,omitempty"`
+	ValueQuarterly  *value.QuarterlyReport     `json:"value_quarterly,omitempty"`
+}
+
+func reportFromValueMonthly(result *value.MonthlyReport) *DailyReport {
+	report := &DailyReport{Version: "value-monthly-report-v1", GeneratedAt: time.Now().UTC(), CodeVersion: currentCodeVersion()}
+	if result == nil {
+		report.Warnings = append(report.Warnings, "月度价值工作流没有返回结果")
+		return report
+	}
+	report.TargetDate = result.ScreenDate
+	report.TradeDate = result.ScreenDate
+	report.DataVersion = result.ScreenDate
+	report.StrategyVersion = result.Policy.Version
+	report.ValueMonthly = result
+	return report
+}
+
+func reportFromValueQuarterly(result *value.QuarterlyReport) *DailyReport {
+	report := &DailyReport{Version: "value-quarterly-report-v1", GeneratedAt: time.Now().UTC(), CodeVersion: currentCodeVersion()}
+	if result == nil {
+		report.Warnings = append(report.Warnings, "季度价值工作流没有返回结果")
+		return report
+	}
+	report.TargetDate = result.ReviewDate
+	report.TradeDate = result.ReviewDate
+	report.DataVersion = result.ReviewDate
+	report.StrategyVersion = result.Policy.Version
+	report.ValueQuarterly = result
+	return report
 }
 
 func reportFromDaily(result *daily.Result) *DailyReport {
