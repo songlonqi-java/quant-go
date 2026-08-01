@@ -17,6 +17,7 @@ import (
 )
 
 var ErrPortfolioAlreadyImported = errors.New("该 YAML 文件已经导入")
+var ErrPortfolioConflict = errors.New("交易记录已被修改，请刷新后重试")
 
 type StoredTransaction struct {
 	ID        int64
@@ -34,6 +35,16 @@ type PortfolioImport struct {
 	SourceSHA256     string
 	TransactionCount int
 	ImportedAt       string
+}
+
+type PortfolioAudit struct {
+	ID            int64
+	TransactionID int64
+	Operation     string
+	BeforeJSON    string
+	AfterJSON     string
+	Source        string
+	CreatedAt     string
 }
 
 func (s *taskStore) portfolioLedger(ctx context.Context) (*portfolio.Ledger, error) {
@@ -123,6 +134,125 @@ func (s *taskStore) createPortfolioTransaction(ctx context.Context, transaction 
 	return stored, nil
 }
 
+func (s *taskStore) updatePortfolioComment(ctx context.Context, id int64, version int, comment, source string) (*StoredTransaction, error) {
+	comment = strings.TrimSpace(comment)
+	if len([]rune(comment)) > 500 {
+		return nil, fmt.Errorf("备注不能超过 500 个字符")
+	}
+	if source == "" {
+		source = "web"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	before, err := portfolioTransactionByID(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if before.Status != "active" || before.Version != version {
+		return nil, ErrPortfolioConflict
+	}
+	now := timestamp()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE portfolio_transactions
+		SET comment = ?, updated_at = ?, version = version + 1
+		WHERE id = ? AND status = 'active' AND version = ?`, comment, now, id, version)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed != 1 {
+		return nil, ErrPortfolioConflict
+	}
+	after := *before
+	after.Trade.Comment = comment
+	after.UpdatedAt = now
+	after.Version++
+	if err := insertPortfolioAudit(ctx, tx, id, "update_comment", before, &after, source, now); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &after, nil
+}
+
+func (s *taskStore) voidPortfolioTransaction(ctx context.Context, id int64, version int, source string) error {
+	if source == "" {
+		source = "web"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	before, err := portfolioTransactionByID(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if before.Status != "active" || before.Version != version {
+		return ErrPortfolioConflict
+	}
+	ledger, err := portfolioLedgerExcluding(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := portfolio.ValidateLedger(ledger); err != nil {
+		return fmt.Errorf("撤销后流水无效: %w", err)
+	}
+	now := timestamp()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE portfolio_transactions
+		SET status = 'void', updated_at = ?, version = version + 1
+		WHERE id = ? AND status = 'active' AND version = ?`, now, id, version)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrPortfolioConflict
+	}
+	after := *before
+	after.Status = "void"
+	after.UpdatedAt = now
+	after.Version++
+	if err := insertPortfolioAudit(ctx, tx, id, "void", before, &after, source, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *taskStore) portfolioAudits(ctx context.Context, limit int) ([]PortfolioAudit, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, transaction_id, operation, before_json, after_json, source, created_at
+		FROM portfolio_audit_logs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var audits []PortfolioAudit
+	for rows.Next() {
+		var audit PortfolioAudit
+		if err := rows.Scan(&audit.ID, &audit.TransactionID, &audit.Operation, &audit.BeforeJSON,
+			&audit.AfterJSON, &audit.Source, &audit.CreatedAt); err != nil {
+			return nil, err
+		}
+		audits = append(audits, audit)
+	}
+	return audits, rows.Err()
+}
+
 func (s *taskStore) importPortfolioYAML(ctx context.Context, path string) (*PortfolioImport, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
@@ -207,6 +337,25 @@ func (s *taskStore) exportPortfolioYAML(ctx context.Context) ([]byte, error) {
 	return contents, nil
 }
 
+func (s *taskStore) latestDailyReport(ctx context.Context) (*DailyReport, error) {
+	var encoded string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT report_json FROM web_tasks
+		WHERE kind = ? AND status = ? AND report_json <> ''
+		ORDER BY id DESC LIMIT 1`, taskKindDaily, TaskSucceeded).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var report DailyReport
+	if err := json.Unmarshal([]byte(encoded), &report); err != nil {
+		return nil, fmt.Errorf("解析最近日报: %w", err)
+	}
+	return &report, nil
+}
+
 func portfolioLedgerFromQuery(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }) (*portfolio.Ledger, error) {
@@ -227,6 +376,45 @@ func portfolioLedgerFromQuery(ctx context.Context, queryer interface {
 		ledger.Transactions = append(ledger.Transactions, transaction)
 	}
 	return ledger, rows.Err()
+}
+
+func portfolioLedgerExcluding(ctx context.Context, queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, excludedID int64) (*portfolio.Ledger, error) {
+	rows, err := queryer.QueryContext(ctx, `
+		SELECT trade_date, code, action, shares, price, comment
+		FROM portfolio_transactions
+		WHERE status = 'active' AND id <> ? ORDER BY trade_date, id`, excludedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ledger := &portfolio.Ledger{}
+	for rows.Next() {
+		var transaction portfolio.Transaction
+		if err := rows.Scan(&transaction.Date, &transaction.Code, &transaction.Action,
+			&transaction.Shares, &transaction.Price, &transaction.Comment); err != nil {
+			return nil, err
+		}
+		ledger.Transactions = append(ledger.Transactions, transaction)
+	}
+	return ledger, rows.Err()
+}
+
+func portfolioTransactionByID(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id int64) (*StoredTransaction, error) {
+	var transaction StoredTransaction
+	err := queryer.QueryRowContext(ctx, `
+		SELECT id, trade_date, code, action, shares, price, comment, status, source, created_at, updated_at, version
+		FROM portfolio_transactions WHERE id = ?`, id).Scan(
+		&transaction.ID, &transaction.Trade.Date, &transaction.Trade.Code, &transaction.Trade.Action,
+		&transaction.Trade.Shares, &transaction.Trade.Price, &transaction.Trade.Comment,
+		&transaction.Status, &transaction.Source, &transaction.CreatedAt, &transaction.UpdatedAt, &transaction.Version)
+	if err != nil {
+		return nil, err
+	}
+	return &transaction, nil
 }
 
 func insertPortfolioAudit(ctx context.Context, execer sqlExecer, transactionID int64, operation string, before, after any, source, createdAt string) error {
