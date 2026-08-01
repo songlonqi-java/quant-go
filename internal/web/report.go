@@ -181,3 +181,32 @@ func strategyVersion(names []string) string {
 	digest := sha256.Sum256([]byte(strings.Join(ordered, "\n")))
 	return hex.EncodeToString(digest[:6])
 }
+
+const sectorDisplayLimit = 10
+
+func risingSectors(sectors []data.SectorDaily) []data.SectorDaily {
+	return sectorMovers(sectors, true)
+}
+
+func fallingSectors(sectors []data.SectorDaily) []data.SectorDaily {
+	return sectorMovers(sectors, false)
+}
+
+func sectorMovers(sectors []data.SectorDaily, rising bool) []data.SectorDaily {
+	movers := make([]data.SectorDaily, 0, len(sectors))
+	for _, sector := range sectors {
+		if (rising && sector.Chg1 > 0) || (!rising && sector.Chg1 < 0) {
+			movers = append(movers, sector)
+		}
+	}
+	sort.SliceStable(movers, func(i, j int) bool {
+		if rising {
+			return movers[i].Chg1 > movers[j].Chg1
+		}
+		return movers[i].Chg1 < movers[j].Chg1
+	})
+	if len(movers) > sectorDisplayLimit {
+		movers = movers[:sectorDisplayLimit]
+	}
+	return movers
+}

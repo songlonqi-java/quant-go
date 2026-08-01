@@ -21,11 +21,13 @@ type HotTopic struct {
 }
 
 type NewsSummary struct {
-	TotalNews  int
-	DateRange  string
-	HotTopics  []HotTopic
-	HotStocks  []HotStock
-	Sentiment  string
+	TotalNews       int
+	DateRange       string
+	HotTopics       []HotTopic
+	RecentNews      int
+	RecentHotTopics []HotTopic
+	HotStocks       []HotStock
+	Sentiment       string
 }
 
 type HotStock struct {
@@ -84,6 +86,9 @@ func Analyze(ctx context.Context, client *data.Client, rawDir string, topN int) 
 	}
 
 	summary.HotTopics = extractKeywords(allNews, topN)
+	recentNews := newsFromRecentCalendarDays(allNews, time.Now(), 2)
+	summary.RecentNews = len(recentNews)
+	summary.RecentHotTopics = extractKeywords(recentNews, topN)
 	summary.HotStocks = matchStocks(allNews, rawDir, topN)
 
 	return summary, nil
@@ -106,6 +111,12 @@ func (s *NewsSummary) Print() {
 			fmt.Printf("  %s (×%d)%s\n", t.Keyword, t.Count, stockStr)
 		}
 	}
+	if s.RecentNews > 0 {
+		fmt.Printf("\n近2日热点（%d 条）:\n", s.RecentNews)
+		for _, topic := range s.RecentHotTopics {
+			fmt.Printf("  %s (×%d)\n", topic.Keyword, topic.Count)
+		}
+	}
 
 	if len(s.HotStocks) > 0 {
 		fmt.Println("\n受关注个股:")
@@ -114,6 +125,37 @@ func (s *NewsSummary) Print() {
 		}
 	}
 	fmt.Println("==============================")
+}
+
+func newsFromRecentCalendarDays(items []data.NewsItem, now time.Time, days int) []data.NewsItem {
+	if days < 1 {
+		return nil
+	}
+	location := now.Location()
+	today := now.In(location).Format("20060102")
+	cutoff := now.In(location).AddDate(0, 0, -(days - 1)).Format("20060102")
+	recent := make([]data.NewsItem, 0, len(items))
+	for _, item := range items {
+		date := newsDateKey(item.Datetime)
+		if date >= cutoff && date <= today {
+			recent = append(recent, item)
+		}
+	}
+	return recent
+}
+
+func newsDateKey(value string) string {
+	value = strings.TrimSpace(value)
+	digits := make([]byte, 0, 8)
+	for i := 0; i < len(value) && len(digits) < 8; i++ {
+		if value[i] >= '0' && value[i] <= '9' {
+			digits = append(digits, value[i])
+		}
+	}
+	if len(digits) != 8 {
+		return ""
+	}
+	return string(digits)
 }
 
 func extractKeywords(news []data.NewsItem, topN int) []HotTopic {

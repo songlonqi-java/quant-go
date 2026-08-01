@@ -15,6 +15,7 @@ import (
 
 	quantai "quant/internal/ai"
 	"quant/internal/config"
+	"quant/internal/data"
 	"quant/internal/portfolio"
 	"quant/internal/value"
 )
@@ -294,6 +295,60 @@ func TestReportAIQuestionPersistsUsageAndScopedPrompt(t *testing.T) {
 	}
 	if !strings.Contains(fake.system, "报告原始数据") || !strings.Contains(fake.prompt, "20260731") || strings.Contains(fake.prompt, "portfolio_transactions") {
 		t.Fatalf("unsafe or incomplete AI prompt: system=%q prompt=%q", fake.system, fake.prompt)
+	}
+}
+
+func TestReportAISummaryUsesFullReportAndReplacesPreviousSummary(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "web.db")
+	fake := &fakeAICompleter{}
+	server, err := newServer(Options{
+		Config: &config.Config{Data: config.DataConfig{MetaDir: filepath.Dir(dbPath), RawDir: t.TempDir()}}, DatabasePath: dbPath, AIClient: fake,
+	}, func(context.Context, string, func(string)) (*TaskResult, error) {
+		return analysisTaskResult(&DailyReport{}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	task, err := server.store.createDaily(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.claimNext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	report := &DailyReport{
+		Version: "daily-report-v1", TradeDate: "20260731", DataVersion: "20260731",
+		Sectors:        []data.SectorDaily{{SectorName: "银行", Chg1: 1.2}},
+		SnapshotLedger: []portfolio.Transaction{{Date: "20260701", Code: "600000.SH", Action: "buy", Shares: 100, Price: 10}},
+	}
+	if err := server.store.finish(context.Background(), task.ID, report, nil); err != nil {
+		t.Fatal(err)
+	}
+	reports, _ := server.store.reports(context.Background(), ReportFilter{})
+	path := "/reports/" + strconv.FormatInt(reports[0].ID, 10) + "/summarize"
+	for i := 0; i < 2; i++ {
+		values := url.Values{"csrf_token": {server.csrfToken}}
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(values.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		server.mux.ServeHTTP(response, request)
+		if response.Code != http.StatusSeeOther {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	answers, err := server.store.aiAnswers(context.Background(), reports[0].ID)
+	if err != nil || len(answers) != 1 || answers[0].Question != aiReportSummaryQuestion {
+		t.Fatalf("answers=%+v err=%v", answers, err)
+	}
+	if !strings.Contains(fake.system, "20 至 40 行") || !strings.Contains(fake.prompt, `"sectors"`) || !strings.Contains(fake.prompt, `"portfolio_snapshot"`) || !strings.Contains(fake.prompt, "600000.SH") {
+		t.Fatalf("full report prompt missing data: system=%q prompt=%q", fake.system, fake.prompt)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/reports/"+strconv.FormatInt(reports[0].ID, 10), nil)
+	response := httptest.NewRecorder()
+	server.mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "重新生成简报") || strings.Contains(response.Body.String(), "<strong>问：</strong>整份报告 AI 简报") {
+		t.Fatalf("summary page status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

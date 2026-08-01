@@ -23,6 +23,7 @@ import (
 	quantai "quant/internal/ai"
 	"quant/internal/config"
 	"quant/internal/portfolio"
+	"quant/internal/strategy"
 	"quant/internal/value"
 	"quant/internal/workflow/daily"
 	"quant/internal/workflow/valueprepare"
@@ -131,6 +132,7 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 	server.mux.HandleFunc("GET /reports", server.handleReports)
 	server.mux.HandleFunc("GET /reports/{id}", server.handleReport)
 	server.mux.HandleFunc("POST /reports/{id}/ask", server.handleReportAsk)
+	server.mux.HandleFunc("POST /reports/{id}/summarize", server.handleReportSummarize)
 	server.mux.HandleFunc("GET /schedules", server.handleSchedules)
 	server.mux.HandleFunc("POST /schedules/{kind}", server.handleScheduleUpdate)
 	server.mux.HandleFunc("GET /monitoring", server.handleMonitoring)
@@ -268,6 +270,7 @@ func (s *Server) handlePortfolio(w http.ResponseWriter, r *http.Request) {
 		Transactions: transactions,
 		Audits:       audits,
 		CSRFToken:    s.csrfToken,
+		Today:        time.Now().In(time.Local).Format("2006-01-02"),
 		Status:       r.URL.Query().Get("status"),
 		Error:        r.URL.Query().Get("error"),
 	}
@@ -421,10 +424,20 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 	data.AIEnabled = s.ai != nil
 	data.AIError = r.URL.Query().Get("ai_error")
-	data.Answers, err = s.store.aiAnswers(r.Context(), report.ID)
+	answers, err := s.store.aiAnswers(r.Context(), report.ID)
 	if err != nil {
 		http.Error(w, "读取 AI 问答失败", http.StatusInternalServerError)
 		return
+	}
+	for _, answer := range answers {
+		if answer.Question == aiReportSummaryQuestion {
+			if data.Summary == nil {
+				summary := answer
+				data.Summary = &summary
+			}
+			continue
+		}
+		data.Answers = append(data.Answers, answer)
 	}
 	renderPage(w, reportCenterDetailTemplate, data)
 }
@@ -480,6 +493,56 @@ func (s *Server) handleReportAsk(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/reports/%d", id), http.StatusSeeOther)
 }
 
+func (s *Server) handleReportSummarize(w http.ResponseWriter, r *http.Request) {
+	if !s.validCSRF(r) {
+		http.Error(w, "表单已过期，请刷新页面后重试", http.StatusForbidden)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	if s.ai == nil {
+		redirectAIError(w, r, id, fmt.Errorf("AI 尚未启用或配置不完整"))
+		return
+	}
+	record, err := s.store.report(r.Context(), id)
+	if err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	snapshot, err := s.store.reportSnapshot(r.Context(), record.PortfolioSnapshotID)
+	if err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	contextJSON, err := fullReportContext(record, snapshot)
+	if err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	prompt := "以下是完整的结构化报告及执行时持仓快照。请综合全部内容生成简报，不要只分析推荐列表：\n" + contextJSON
+	completion, err := s.ai.Complete(r.Context(), aiSummarySystemPrompt(record.Kind), prompt)
+	if err != nil {
+		redirectAIError(w, r, id, s.safeAIError(err))
+		return
+	}
+	if completion == nil {
+		redirectAIError(w, r, id, fmt.Errorf("AI 响应为空"))
+		return
+	}
+	if err := validateAIAnswer(completion.Content); err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	if err := s.store.saveAIReportSummary(r.Context(), id, completion.Content, s.ai.Model(), completion); err != nil {
+		redirectAIError(w, r, id, err)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/reports/%d", id), http.StatusSeeOther)
+}
+
 func aiSystemPrompt(kind string) string {
 	base := "你是本地量化报告解释助手。回答必须依次使用四个明确标题：报告原始数据、模型推断、数据不足、风险提示。不得声称执行交易，不得修改持仓或任务，不得覆盖空仓或观望约束。必须写明结论仅基于报告日期的数据。"
 	switch kind {
@@ -489,6 +552,18 @@ func aiSystemPrompt(kind string) string {
 		return base + " 季度复核应说明来源月度快照、基本面变化和估值回归，不得省略数据缺口。"
 	default:
 		return base + " 日终报告应区分正式推荐、观察机会、量化信号、资金与新闻确认；观察机会不能升级为正式买入。"
+	}
+}
+
+func aiSummarySystemPrompt(kind string) string {
+	base := "你是本地量化报告简报助手。请用简单、克制的中文总结整份报告，控制在 20 至 40 行，每行尽量只表达一个要点，不使用 Markdown 表格。必须依次使用四个明确标题：报告原始数据、模型推断、数据不足、风险提示。应综合市场、仓位、全部信号、正式推荐、观察机会、持仓、板块、新闻、警告和数据版本；没有的数据要明确说没有。股票代码只显示六位数字。不得声称执行交易，不得修改持仓或任务，不得覆盖空仓或观望约束，并写明结论仅基于报告日期的数据。"
+	switch kind {
+	case taskKindValueMonthly:
+		return base + " 月度价值候选只用于跟踪，不得直接表述为买入指令。"
+	case taskKindValueQuarterly:
+		return base + " 季度复核应说明来源月度快照以及基本面和估值变化。"
+	default:
+		return base + " 日终报告要清楚区分正式推荐和观察机会，板块只概括涨跌主要方向。"
 	}
 }
 
@@ -698,6 +773,7 @@ type portfolioPageData struct {
 	Transactions []StoredTransaction
 	Audits       []PortfolioAudit
 	CSRFToken    string
+	Today        string
 	Status       string
 	Error        string
 	Refresh      bool
@@ -714,6 +790,7 @@ type reportPageData struct {
 	Record      *ReportRecord
 	Snapshot    []portfolio.Transaction
 	HasSnapshot bool
+	Summary     *AIAnswer
 	Answers     []AIAnswer
 	AIEnabled   bool
 	AIError     string
@@ -749,7 +826,7 @@ func portfolioHoldingViews(ledger *portfolio.Ledger, report *DailyReport) []port
 	holdings := ledger.CurrentHoldings()
 	views := make([]portfolioHoldingView, 0, len(holdings))
 	for _, holding := range holdings {
-		view := portfolioHoldingView{Code: holding.Code, Name: holding.Code, Shares: holding.Shares, Cost: holding.AvgCost}
+		view := portfolioHoldingView{Code: holding.Code, Shares: holding.Shares, Cost: holding.AvgCost}
 		if price, ok := prices[holding.Code]; ok && price.LastPrice > 0 {
 			view.Name = price.Name
 			view.LastPrice = price.LastPrice
@@ -772,11 +849,15 @@ type taskPageData struct {
 
 func renderPage(w http.ResponseWriter, body string, data any) {
 	t, err := template.New("page").Funcs(template.FuncMap{
-		"shortTime": shortTime,
-		"pct":       func(v float64) string { return fmt.Sprintf("%+.2f%%", v) },
-		"coverage":  func(v float64) string { return fmt.Sprintf("%.1f%%", v*100) },
-		"join":      strings.Join,
-		"kindLabel": taskKindLabel,
+		"shortTime":     shortTime,
+		"pct":           func(v float64) string { return fmt.Sprintf("%+.2f%%", v) },
+		"coverage":      func(v float64) string { return fmt.Sprintf("%.1f%%", v*100) },
+		"join":          strings.Join,
+		"kindLabel":     taskKindLabel,
+		"stockCode":     displayStockCode,
+		"horizonLabel":  strategy.HorizonLabel,
+		"sectorRisers":  risingSectors,
+		"sectorFallers": fallingSectors,
 	}).Parse(pageTemplate + body)
 	if err != nil {
 		http.Error(w, "页面模板错误", http.StatusInternalServerError)
@@ -801,6 +882,14 @@ func shortTime(value string) string {
 	return value
 }
 
+func displayStockCode(value string) string {
+	value = strings.TrimSpace(value)
+	if separator := strings.IndexByte(value, '.'); separator > 0 {
+		return value[:separator]
+	}
+	return value
+}
+
 const pageTemplate = `{{define "page"}}<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 {{if .Refresh}}<meta http-equiv="refresh" content="2">{{end}}
@@ -821,7 +910,7 @@ const homeTemplate = `{{define "body"}}
 <form method="post" action="/portfolio/import-yaml" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">从 portfolio.yaml 导入</button></form><a href="/portfolio/export-yaml">导出 YAML</a>
 <p class="muted">导入只允许在 SQLite 流水为空时执行，且同一文件不会重复导入。</p></section>
 <section class="card"><h2>最近任务</h2>{{if .Tasks}}<table><thead><tr><th>编号</th><th>类型</th><th>来源</th><th>状态</th><th>创建时间</th><th>进度 / 结果</th></tr></thead><tbody>{{range .Tasks}}<tr><td><a href="/tasks/{{.ID}}">#{{.ID}}</a></td><td>{{kindLabel .Kind}}</td><td>{{.TriggerSource}}</td><td><span class="tag">{{.Status}}</span></td><td>{{shortTime .CreatedAt}}</td><td>{{.Message}}{{if .Error}}<div class="error">{{.Error}}</div>{{end}}</td></tr>{{end}}</tbody></table>{{else}}<p class="muted">还没有任务。首次点击上方按钮即可运行。</p>{{end}}</section>
-<section class="card"><h2>当前范围</h2><p class="muted">当前仅允许本机访问，已支持任务、报告、持仓流水、本地定时、监控、备份和可选的报告 AI 问答。HTTPS 与主机部署留待后期。</p></section>{{end}}`
+<section class="card"><h2>当前范围</h2><p class="muted">当前仅允许本机访问，已支持任务、报告、持仓流水、本地定时、监控、备份，以及可选的 AI 报告简报和报告问答。HTTPS 与主机部署留待后期。</p></section>{{end}}`
 
 const portfolioTemplate = `{{define "body"}}
 <h1>持仓与交易流水</h1>
@@ -829,16 +918,16 @@ const portfolioTemplate = `{{define "body"}}
 {{if eq .Status "created"}}<p class="success">交易已录入。</p>{{end}}{{if eq .Status "updated"}}<p class="success">备注已更新。</p>{{end}}{{if eq .Status "voided"}}<p class="success">交易已撤销，历史记录仍保留。</p>{{end}}
 <section class="card"><h2>录入交易</h2><form class="trade-form" method="post" action="/portfolio/transactions">
 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-<label>交易日期<input name="date" inputmode="numeric" placeholder="YYYYMMDD" maxlength="8" required></label>
-<label>股票代码<input name="code" placeholder="000001.SZ" required></label>
+<label>交易日期<input name="date" type="date" value="{{.Today}}" required></label>
+<label>股票代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" placeholder="600000" minlength="6" maxlength="6" required></label>
 <label>方向<select name="action"><option value="buy">买入</option><option value="sell">卖出</option></select></label>
 <label>股数<input name="shares" type="number" min="1" step="1" required></label>
 <label>成交价<input name="price" type="number" min="0.001" step="0.001" required></label>
 <label>备注<input name="comment" maxlength="500"></label><button type="submit">保存交易</button></form>
 <p class="muted">卖出不能超过当时持仓；流水按交易日期和录入顺序计算。</p></section>
-<section class="card"><h2>当前持仓</h2>{{if .Holdings}}<div class="table-wrap"><table><thead><tr><th>股票</th><th>股数</th><th>成本</th><th>最近价</th><th>市值</th><th>浮动盈亏</th></tr></thead><tbody>{{range .Holdings}}<tr><td>{{.Code}} {{.Name}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.3f" .Cost}}</td>{{if .HasPrice}}<td>{{printf "%.3f" .LastPrice}}<div class="muted">{{.PriceAsOf}}</div></td><td>{{printf "%.2f" .MarketVal}}</td><td>{{pct .PnLPct}} / {{printf "%+.2f" .PnL}}</td>{{else}}<td class="muted">运行日报后更新</td><td>-</td><td>-</td>{{end}}</tr>{{end}}</tbody></table></div>{{else}}<p class="muted">当前空仓。</p>{{end}}</section>
-<section class="card"><h2>交易流水</h2>{{if .Transactions}}<div class="table-wrap"><table><thead><tr><th>日期</th><th>股票</th><th>方向</th><th>股数</th><th>价格</th><th>备注</th><th>状态</th><th>操作</th></tr></thead><tbody>{{range .Transactions}}<tr><td>{{.Trade.Date}}</td><td>{{.Trade.Code}}</td><td>{{if eq .Trade.Action "buy"}}买入{{else}}卖出{{end}}</td><td>{{printf "%.0f" .Trade.Shares}}</td><td>{{printf "%.3f" .Trade.Price}}</td><td>{{if eq .Status "active"}}<form class="inline-form" method="post" action="/portfolio/transactions/{{.ID}}/comment"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="version" value="{{.Version}}"><input type="text" name="comment" maxlength="500" value="{{.Trade.Comment}}"><button type="submit">保存</button></form>{{else}}{{.Trade.Comment}}{{end}}</td><td><span class="tag">{{.Status}}</span></td><td>{{if eq .Status "active"}}<form method="post" action="/portfolio/transactions/{{.ID}}/void" onsubmit="return confirm('确认撤销这笔交易？记录不会被物理删除。')"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="version" value="{{.Version}}"><button class="danger" type="submit">撤销</button></form>{{else}}-{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">暂无交易流水，可返回首页导入 YAML。</p>{{end}}</section>
-{{if .ClosedTrades}}<section class="card"><h2>已平仓明细</h2><div class="table-wrap"><table><thead><tr><th>买入日</th><th>卖出日</th><th>股票</th><th>股数</th><th>收益</th></tr></thead><tbody>{{range .ClosedTrades}}<tr><td>{{.BuyDate}}</td><td>{{.SellDate}}</td><td>{{.Code}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{pct .Return}} / {{printf "%+.2f" .PnL}}</td></tr>{{end}}</tbody></table></div></section>{{end}}
+<section class="card"><h2>当前持仓</h2>{{if .Holdings}}<div class="table-wrap"><table><thead><tr><th>股票</th><th>股数</th><th>成本</th><th>最近价</th><th>市值</th><th>浮动盈亏</th></tr></thead><tbody>{{range .Holdings}}<tr><td>{{stockCode .Code}} {{.Name}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.3f" .Cost}}</td>{{if .HasPrice}}<td>{{printf "%.3f" .LastPrice}}<div class="muted">{{.PriceAsOf}}</div></td><td>{{printf "%.2f" .MarketVal}}</td><td>{{pct .PnLPct}} / {{printf "%+.2f" .PnL}}</td>{{else}}<td class="muted">运行日报后更新</td><td>-</td><td>-</td>{{end}}</tr>{{end}}</tbody></table></div>{{else}}<p class="muted">当前空仓。</p>{{end}}</section>
+<section class="card"><h2>交易流水</h2>{{if .Transactions}}<div class="table-wrap"><table><thead><tr><th>日期</th><th>股票</th><th>方向</th><th>股数</th><th>价格</th><th>备注</th><th>状态</th><th>操作</th></tr></thead><tbody>{{range .Transactions}}<tr><td>{{.Trade.Date}}</td><td>{{stockCode .Trade.Code}}</td><td>{{if eq .Trade.Action "buy"}}买入{{else}}卖出{{end}}</td><td>{{printf "%.0f" .Trade.Shares}}</td><td>{{printf "%.3f" .Trade.Price}}</td><td>{{if eq .Status "active"}}<form class="inline-form" method="post" action="/portfolio/transactions/{{.ID}}/comment"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="version" value="{{.Version}}"><input type="text" name="comment" maxlength="500" value="{{.Trade.Comment}}"><button type="submit">保存</button></form>{{else}}{{.Trade.Comment}}{{end}}</td><td><span class="tag">{{.Status}}</span></td><td>{{if eq .Status "active"}}<form method="post" action="/portfolio/transactions/{{.ID}}/void" onsubmit="return confirm('确认撤销这笔交易？记录不会被物理删除。')"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="version" value="{{.Version}}"><button class="danger" type="submit">撤销</button></form>{{else}}-{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">暂无交易流水，可返回首页导入 YAML。</p>{{end}}</section>
+{{if .ClosedTrades}}<section class="card"><h2>已平仓明细</h2><div class="table-wrap"><table><thead><tr><th>买入日</th><th>卖出日</th><th>股票</th><th>股数</th><th>收益</th></tr></thead><tbody>{{range .ClosedTrades}}<tr><td>{{.BuyDate}}</td><td>{{.SellDate}}</td><td>{{stockCode .Code}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{pct .Return}} / {{printf "%+.2f" .PnL}}</td></tr>{{end}}</tbody></table></div></section>{{end}}
 <section class="card"><h2>最近审计记录</h2>{{if .Audits}}<div class="table-wrap"><table><thead><tr><th>时间</th><th>交易编号</th><th>操作</th><th>来源</th></tr></thead><tbody>{{range .Audits}}<tr><td>{{shortTime .CreatedAt}}</td><td>#{{.TransactionID}}</td><td>{{.Operation}}</td><td>{{.Source}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">暂无审计记录。</p>{{end}}</section>{{end}}`
 
 const reportsTemplate = `{{define "body"}}<h1>报告中心</h1>
@@ -847,8 +936,9 @@ const reportsTemplate = `{{define "body"}}<h1>报告中心</h1>
 
 const reportCenterDetailTemplate = `{{define "body"}}<p><a href="/reports">← 返回报告中心</a></p><section class="card"><h1>报告 #{{.Record.ID}}</h1><div class="grid"><div><span class="muted">任务</span><div><a href="/tasks/{{.Record.TaskID}}">#{{.Record.TaskID}}</a> · {{.Record.TaskStatus}}</div></div><div><span class="muted">交易日 / 数据版本</span><div>{{.Record.TradeDate}} / {{.Record.DataVersion}}</div></div><div><span class="muted">报告 / 代码版本</span><div>{{.Record.ReportVersion}} / {{.Record.CodeVersion}}</div></div><div><span class="muted">策略版本</span><div>{{.Record.StrategyVersion}}</div></div><div><span class="muted">持仓快照</span><div>{{.Record.SnapshotTransactions}} 笔交易</div></div></div></section>
 {{with .Record.Report}}<section class="card"><h2>分析摘要</h2>{{with .ValueMonthly}}<p>扫描 {{.Scanned}} 只，符合规则 {{.Qualified}} 只，报告展示 {{len .Candidates}} 只；规则 {{.Policy.Version}}。</p>{{else}}{{with .ValueQuarterly}}<p>复核 {{len .Items}} 个价值候选；规则 {{.Policy.Version}}，来源快照 {{.SourceSnapshot}}。</p>{{else}}<p>仓位策略：<strong>{{.Position.Action}}</strong>　{{.Position.Advice}}</p><p>正式信号 {{len .Signals}} 条，正式买入 {{len .Recommendations}} 条，观察机会 {{len .Watchlist}} 条。</p>{{end}}{{end}}{{if .Warnings}}{{range .Warnings}}<div class="warn">{{.}}</div>{{end}}{{end}}</section>{{end}}
-<section class="card"><h2>执行时持仓流水快照</h2>{{if .HasSnapshot}}{{if .Snapshot}}<div class="table-wrap"><table><thead><tr><th>日期</th><th>股票</th><th>方向</th><th>股数</th><th>价格</th><th>备注</th></tr></thead><tbody>{{range .Snapshot}}<tr><td>{{.Date}}</td><td>{{.Code}}</td><td>{{.Action}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.3f" .Price}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">执行时交易流水为空。</p>{{end}}{{else}}<p class="muted">旧报告没有持仓流水快照。</p>{{end}}</section>
-<section class="card"><h2>AI 报告问答</h2><div class="warn">AI 只解释当前报告（数据日期 {{.Record.TradeDate}}），输出不是交易指令，也不能覆盖空仓或观望约束。</div>{{if .AIError}}<div class="warn">{{.AIError}}</div>{{end}}{{if .AIEnabled}}<form method="post" action="/reports/{{.Record.ID}}/ask"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>只基于当前报告提问</label><textarea name="question" maxlength="1000" rows="4" style="width:100%;box-sizing:border-box;margin:8px 0" required></textarea><button type="submit">提交问题</button></form>{{else}}<p class="muted">AI 未启用。请配置 ai.enabled、base_url、model 和 API Key 后重启服务。</p>{{end}}{{range .Answers}}<div class="card"><p><strong>问：</strong>{{.Question}}</p><p style="white-space:pre-wrap"><strong>答：</strong>{{.Answer}}</p><p class="muted">{{.Model}} · {{shortTime .CreatedAt}}{{if .TotalTokens}} · tokens {{.PromptTokens}} + {{.CompletionTokens}} = {{.TotalTokens}}{{end}}</p></div>{{end}}</section>{{end}}`
+<section class="card"><h2>执行时持仓流水快照</h2>{{if .HasSnapshot}}{{if .Snapshot}}<div class="table-wrap"><table><thead><tr><th>日期</th><th>股票</th><th>方向</th><th>股数</th><th>价格</th><th>备注</th></tr></thead><tbody>{{range .Snapshot}}<tr><td>{{.Date}}</td><td>{{stockCode .Code}}</td><td>{{.Action}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.3f" .Price}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="muted">执行时交易流水为空。</p>{{end}}{{else}}<p class="muted">旧报告没有持仓流水快照。</p>{{end}}</section>
+<section class="card"><h2>AI 报告简报</h2><div class="warn">AI 会读取整份结构化报告和执行时持仓快照；简报仅用于辅助阅读，不是交易指令。</div>{{if .AIError}}<div class="warn">{{.AIError}}</div>{{end}}{{if .AIEnabled}}<form method="post" action="/reports/{{.Record.ID}}/summarize"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit">{{if .Summary}}重新生成简报{{else}}生成 AI 简报{{end}}</button></form>{{else}}<p class="muted">AI 未启用。请配置 ai.enabled、base_url、model 和 API Key 后重启服务。</p>{{end}}{{with .Summary}}<p style="white-space:pre-wrap">{{.Answer}}</p><p class="muted">{{.Model}} · {{shortTime .CreatedAt}}{{if .TotalTokens}} · tokens {{.PromptTokens}} + {{.CompletionTokens}} = {{.TotalTokens}}{{end}}</p>{{end}}</section>
+<section class="card"><h2>AI 报告问答</h2><div class="warn">AI 只解释当前报告（数据日期 {{.Record.TradeDate}}），输出不是交易指令，也不能覆盖空仓或观望约束。</div>{{if .AIEnabled}}<form method="post" action="/reports/{{.Record.ID}}/ask"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>只基于当前报告提问</label><textarea name="question" maxlength="1000" rows="4" style="width:100%;box-sizing:border-box;margin:8px 0" required></textarea><button type="submit">提交问题</button></form>{{end}}{{range .Answers}}<div class="card"><p><strong>问：</strong>{{.Question}}</p><p style="white-space:pre-wrap"><strong>答：</strong>{{.Answer}}</p><p class="muted">{{.Model}} · {{shortTime .CreatedAt}}{{if .TotalTokens}} · tokens {{.PromptTokens}} + {{.CompletionTokens}} = {{.TotalTokens}}{{end}}</p></div>{{end}}</section>{{end}}`
 
 const schedulesTemplate = `{{define "body"}}<h1>本地定时任务</h1>{{if eq .Status "saved"}}<p class="success">定时设置已保存。</p>{{end}}{{if .Error}}<div class="warn">保存失败：{{.Error}}</div>{{end}}<section class="card"><p>定时器只在本地 A 股交易日创建任务，实际执行仍经过单 worker。服务关闭期间不会执行；重启后若当天/当月已到设置时间且尚未入队，会补充入队一次。</p><p class="muted">交易日来自本地 trade_cal.parquet；本地交易日历不包含当天时不会自动入队。价值任务读取已经准备好的慢频数据，不自动调用盘中行情。</p></section>{{range .Schedules}}<section class="card"><h2>{{kindLabel .Kind}}</h2><form class="trade-form" method="post" action="/schedules/{{.Kind}}"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><label>启用<select name="enabled"><option value="0" {{if not .Enabled}}selected{{end}}>关闭</option><option value="1" {{if .Enabled}}selected{{end}}>启用</option></select></label><label>小时<input type="number" name="hour" min="0" max="23" value="{{.Hour}}" required></label><label>分钟<input type="number" name="minute" min="0" max="59" value="{{.Minute}}" required></label><label>起始日（1-28）<input type="number" name="day_of_month" min="1" max="28" value="{{.DayOfMonth}}" required></label>{{if eq .Kind "value_quarterly"}}<label>执行月份<input name="months" value="{{.Months}}" required></label>{{else}}<input type="hidden" name="months" value="">{{end}}<button type="submit">保存</button></form><p class="muted">时区 {{.Timezone}} · 上次入队周期 {{if .LastEnqueuedPeriod}}{{.LastEnqueuedPeriod}}{{else}}无{{end}}</p></section>{{end}}{{end}}`
 
@@ -858,11 +948,11 @@ const taskTemplate = `{{define "body"}}
 <p><a href="/">← 返回任务列表</a></p><section class="card"><h2>{{kindLabel .Task.Kind}} #{{.Task.ID}}</h2><p>状态：<span class="tag">{{.Task.Status}}</span>　来源：{{.Task.TriggerSource}}　创建：{{shortTime .Task.CreatedAt}}　开始：{{shortTime .Task.StartedAt}}　结束：{{shortTime .Task.FinishedAt}}</p><p>{{.Task.Message}}</p>{{if .Task.Error}}<p class="error">失败原因：{{.Task.Error}}</p>{{end}}{{if .Refresh}}<p class="running">任务执行中，页面每 2 秒自动刷新。</p>{{end}}</section>
 <section class="card"><h2>执行记录</h2><ol class="events">{{range .Task.Events}}<li><span class="muted">{{shortTime .CreatedAt}}</span>　{{.Message}}</li>{{end}}</ol></section>
 {{with .Task.Result}}{{with .Backup}}<section class="card"><h2>备份产物</h2><p><strong>{{.Path}}</strong></p><p>文件 {{.Files}} 个 · 大小 {{.Size}} bytes · 创建于 {{shortTime .CreatedAt.String}}</p></section>{{end}}{{with .ValuePreparation}}{{with .Readiness}}<section class="card"><h2>慢频数据准备结果</h2><p>数据日期 {{.TradeDate}}，股票 {{.Stocks}}；估值覆盖 {{coverage .DailyBasicCoverage}}，财务覆盖 {{coverage .FinancialCoverage}}，行业覆盖 {{coverage .SectorCoverage}}。</p>{{range .Issues}}<div class="warn">{{.}}</div>{{end}}{{if .Ready}}<p class="success">慢频价值输入已就绪。</p>{{end}}</section>{{end}}{{end}}{{end}}
-{{with .Task.Report}}{{with .ValueMonthly}}<section class="card"><h2>月度价值筛选（{{.ScreenDate}}）</h2><p>扫描 {{.Scanned}} 只，符合规则 {{.Qualified}} 只；规则 {{.Policy.Version}}。候选池只用于跟踪，不等同于立即买入。</p>{{if .Candidates}}<table><thead><tr><th>股票</th><th>行业</th><th>估值口径</th><th>折价</th><th>ROE</th><th>利润增速</th><th>营收增速</th><th>评分</th></tr></thead><tbody>{{range .Candidates}}<tr><td>{{.Code}} {{.Name}}</td><td>{{.Industry}}</td><td>{{.ValuationBasis}}</td><td>{{pct .DiscountPct}}</td><td>{{pct .ROE}}</td><td>{{pct .ProfitGrowth}}</td><td>{{pct .RevenueGrowth}}</td><td>{{printf "%.1f" .Score}}</td></tr>{{end}}</tbody></table>{{else}}<p>无候选，不因数量不足放宽规则。</p>{{end}}</section>{{else}}{{with .ValueQuarterly}}<section class="card"><h2>季度价值复核（{{.ReviewDate}}）</h2><p class="muted">来源月度快照：{{.SourceSnapshot}}</p>{{if .Items}}<table><thead><tr><th>股票</th><th>行业</th><th>决定</th><th>折价</th><th>ROE</th><th>说明</th></tr></thead><tbody>{{range .Items}}<tr><td>{{.Code}} {{.Name}}</td><td>{{.Industry}}</td><td>{{.Decision}}</td><td>{{pct .DiscountPct}}</td><td>{{pct .ROE}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table>{{else}}<p>无复核对象。</p>{{end}}</section>{{else}}<section class="card"><h2>日报（{{.TradeDate}}）</h2><p class="muted">目标日期 {{.TargetDate}} · 生成于 {{shortTime .GeneratedAt.String}}</p>{{if .Warnings}}{{range .Warnings}}<div class="warn">{{.}}</div>{{end}}{{end}}
-<div class="grid"><div><span class="muted">仓位策略</span><div class="value">{{.Position.Action}}</div><div>{{.Position.Advice}}</div></div>{{with .Market}}<div><span class="muted">{{.IndexCode}}</span><div class="value">{{printf "%.2f" .IndexClose}} <small>{{pct .IndexChg}}</small></div><div>{{.MATrend}} · 赚钱效应 {{printf "%.1f%%" .ProfitEffect}}</div></div>{{end}}{{with .Intraday}}<div><span class="muted">盘中快照</span><div class="value">{{printf "%.1f%%" .CoveragePct}}</div><div>上涨 {{.RisingCount}} / 下跌 {{.FallingCount}} · {{if .Complete}}覆盖完整{{else}}仅供参考{{end}}</div></div>{{end}}</div>
-<h2>正式推荐买入</h2>{{if $.CanRecommend}}{{if .Recommendations}}<table><thead><tr><th>周期</th><th>股票</th><th>建议</th><th>置信度</th><th>建议仓位</th><th>理由</th></tr></thead><tbody>{{range .Recommendations}}<tr><td>{{.Horizon}}</td><td>{{.Code}} {{.Name}}</td><td>{{.Recommendation}}</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{printf "%.1f%%" .PositionPct}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}{{else}}<p>无（当前仓位策略为 {{.Position.Action}}，不强行推荐买入。）</p>{{end}}
-<h2>观察机会</h2>{{if .Watchlist}}<table><thead><tr><th>周期</th><th>股票</th><th>状态</th><th>置信度</th><th>观察理由</th></tr></thead><tbody>{{range .Watchlist}}<tr><td>{{.Horizon}}</td><td>{{.Code}} {{.Name}}</td><td>可跟踪 / 等待确认</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}
-{{if .Holdings}}<h2>持仓</h2><table><thead><tr><th>股票</th><th>股数</th><th>成本</th><th>现价</th><th>浮动盈亏</th></tr></thead><tbody>{{range .Holdings}}<tr><td>{{.Code}} {{.Name}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.2f" .Cost}}</td><td>{{printf "%.2f" .LastPrice}}</td><td>{{pct .PnLPct}}</td></tr>{{end}}</tbody></table>{{end}}
-{{if .News}}<h2>新闻热度</h2><p>近 7 日新闻 {{.News.TotalNews}} 条。{{range .News.HotTopics}}<span class="tag">{{.Keyword}} ×{{.Count}}</span> {{end}}</p>{{end}}
-{{if .Sectors}}<h2>板块快照</h2><table><thead><tr><th>板块</th><th>涨跌幅</th><th>宽度</th><th>标签</th></tr></thead><tbody>{{range .Sectors}}<tr><td>{{.SectorName}}</td><td>{{pct .Chg1}}</td><td>{{printf "%.0f%%" .Breadth}}</td><td>{{.Tags}}</td></tr>{{end}}</tbody></table>{{end}}
+{{with .Task.Report}}{{with .ValueMonthly}}<section class="card"><h2>月度价值筛选（{{.ScreenDate}}）</h2><p>扫描 {{.Scanned}} 只，符合规则 {{.Qualified}} 只；规则 {{.Policy.Version}}。候选池只用于跟踪，不等同于立即买入。</p>{{if .Candidates}}<table><thead><tr><th>股票</th><th>行业</th><th>估值口径</th><th>折价</th><th>ROE</th><th>利润增速</th><th>营收增速</th><th>评分</th></tr></thead><tbody>{{range .Candidates}}<tr><td>{{stockCode .Code}} {{.Name}}</td><td>{{.Industry}}</td><td>{{.ValuationBasis}}</td><td>{{pct .DiscountPct}}</td><td>{{pct .ROE}}</td><td>{{pct .ProfitGrowth}}</td><td>{{pct .RevenueGrowth}}</td><td>{{printf "%.1f" .Score}}</td></tr>{{end}}</tbody></table>{{else}}<p>无候选，不因数量不足放宽规则。</p>{{end}}</section>{{else}}{{with .ValueQuarterly}}<section class="card"><h2>季度价值复核（{{.ReviewDate}}）</h2><p class="muted">来源月度快照：{{.SourceSnapshot}}</p>{{if .Items}}<table><thead><tr><th>股票</th><th>行业</th><th>决定</th><th>折价</th><th>ROE</th><th>说明</th></tr></thead><tbody>{{range .Items}}<tr><td>{{stockCode .Code}} {{.Name}}</td><td>{{.Industry}}</td><td>{{.Decision}}</td><td>{{pct .DiscountPct}}</td><td>{{pct .ROE}}</td><td>{{.Comment}}</td></tr>{{end}}</tbody></table>{{else}}<p>无复核对象。</p>{{end}}</section>{{else}}<section class="card"><h2>日报（{{.TradeDate}}）</h2><p class="muted">目标日期 {{.TargetDate}} · 生成于 {{shortTime .GeneratedAt.String}}</p>{{if .Warnings}}{{range .Warnings}}<div class="warn">{{.}}</div>{{end}}{{end}}
+<div class="grid"><div><span class="muted">仓位策略</span><div class="value">{{.Position.Action}}</div><div>{{.Position.Advice}}</div></div>{{with .Market}}<div><span class="muted">{{stockCode .IndexCode}}</span><div class="value">{{printf "%.2f" .IndexClose}} <small>{{pct .IndexChg}}</small></div><div>{{.MATrend}} · 赚钱效应 {{printf "%.1f%%" .ProfitEffect}}</div></div>{{end}}{{with .Intraday}}<div><span class="muted">盘中快照</span><div class="value">{{printf "%.1f%%" .CoveragePct}}</div><div>上涨 {{.RisingCount}} / 下跌 {{.FallingCount}} · {{if .Complete}}覆盖完整{{else}}仅供参考{{end}}</div></div>{{end}}</div>
+<h2>正式推荐买入</h2>{{if $.CanRecommend}}{{if .Recommendations}}<table><thead><tr><th>周期</th><th>股票</th><th>建议</th><th>置信度</th><th>建议仓位</th><th>理由</th></tr></thead><tbody>{{range .Recommendations}}<tr><td>{{horizonLabel .Horizon}}</td><td>{{stockCode .Code}} {{.Name}}</td><td>{{.Recommendation}}</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{printf "%.1f%%" .PositionPct}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}{{else}}<p>无（当前仓位策略为 {{.Position.Action}}，不强行推荐买入。）</p>{{end}}
+<h2>观察机会</h2>{{if .Watchlist}}<table><thead><tr><th>周期</th><th>股票</th><th>状态</th><th>置信度</th><th>观察理由</th></tr></thead><tbody>{{range .Watchlist}}<tr><td>{{horizonLabel .Horizon}}</td><td>{{stockCode .Code}} {{.Name}}</td><td>可跟踪 / 等待确认</td><td>{{printf "%.0f%%" .Confidence}}</td><td>{{join .Reasons "；"}}</td></tr>{{end}}</tbody></table>{{else}}<p>无</p>{{end}}
+{{if .Holdings}}<h2>持仓</h2><table><thead><tr><th>股票</th><th>股数</th><th>成本</th><th>现价</th><th>浮动盈亏</th></tr></thead><tbody>{{range .Holdings}}<tr><td>{{stockCode .Code}} {{.Name}}</td><td>{{printf "%.0f" .Shares}}</td><td>{{printf "%.2f" .Cost}}</td><td>{{printf "%.2f" .LastPrice}}</td><td>{{pct .PnLPct}}</td></tr>{{end}}</tbody></table>{{end}}
+{{if .News}}<h2>新闻热度</h2><p>近 7 日新闻 {{.News.TotalNews}} 条。{{range .News.HotTopics}}<span class="tag">{{.Keyword}} ×{{.Count}}</span> {{end}}</p><p><strong>近 2 日热点：</strong>{{if .News.RecentNews}}共 {{.News.RecentNews}} 条新闻。{{range .News.RecentHotTopics}}<span class="tag">{{.Keyword}} ×{{.Count}}</span> {{end}}{{if not .News.RecentHotTopics}}暂未形成重复热点词。{{end}}{{else}}暂无近 2 日新闻。{{end}}</p>{{end}}
+{{if .Sectors}}<h2>板块快照</h2><p class="muted">板块仅展示当日涨幅前 10 和跌幅前 10，避免完整榜单冲淡主要方向。</p>{{$rising := sectorRisers .Sectors}}<h3>上涨板块</h3>{{if $rising}}<table><thead><tr><th>板块</th><th>涨跌幅</th><th>宽度</th><th>标签</th></tr></thead><tbody>{{range $rising}}<tr><td>{{.SectorName}}</td><td>{{pct .Chg1}}</td><td>{{printf "%.0f%%" .Breadth}}</td><td>{{.Tags}}</td></tr>{{end}}</tbody></table>{{else}}<p class="muted">无上涨板块。</p>{{end}}{{$falling := sectorFallers .Sectors}}<h3>下跌板块</h3>{{if $falling}}<table><thead><tr><th>板块</th><th>涨跌幅</th><th>宽度</th><th>标签</th></tr></thead><tbody>{{range $falling}}<tr><td>{{.SectorName}}</td><td>{{pct .Chg1}}</td><td>{{printf "%.0f%%" .Breadth}}</td><td>{{.Tags}}</td></tr>{{end}}</tbody></table>{{else}}<p class="muted">无下跌板块。</p>{{end}}{{end}}
 </section>{{end}}{{end}}{{end}}{{end}}`

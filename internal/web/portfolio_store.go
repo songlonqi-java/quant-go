@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"quant/internal/portfolio"
 
@@ -444,9 +445,42 @@ func marshalAuditValue(value any) (string, error) {
 }
 
 func normalizePortfolioTransaction(transaction portfolio.Transaction) portfolio.Transaction {
-	transaction.Date = strings.TrimSpace(transaction.Date)
-	transaction.Code = strings.ToUpper(strings.TrimSpace(transaction.Code))
+	transaction.Date = normalizePortfolioDate(transaction.Date)
+	transaction.Code = normalizePortfolioCode(transaction.Code)
 	transaction.Action = strings.ToLower(strings.TrimSpace(transaction.Action))
 	transaction.Comment = strings.TrimSpace(transaction.Comment)
 	return transaction
+}
+
+func normalizePortfolioDate(value string) string {
+	value = strings.TrimSpace(value)
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		return parsed.Format("20060102")
+	}
+	return value
+}
+
+func normalizePortfolioCode(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if len(value) != 6 {
+		return value
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return value
+		}
+	}
+	if strings.HasPrefix(value, "920") {
+		return value + ".BJ"
+	}
+	switch value[0] {
+	case '5', '6', '9':
+		return value + ".SH"
+	case '0', '1', '2', '3':
+		return value + ".SZ"
+	case '4', '8':
+		return value + ".BJ"
+	default:
+		return value
+	}
 }

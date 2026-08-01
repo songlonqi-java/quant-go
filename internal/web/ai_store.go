@@ -7,7 +7,10 @@ import (
 	"strings"
 
 	"quant/internal/ai"
+	"quant/internal/portfolio"
 )
+
+const aiReportSummaryQuestion = "整份报告 AI 简报"
 
 type AIAnswer struct {
 	ID               int64
@@ -30,6 +33,27 @@ func (s *taskStore) saveAIAnswer(ctx context.Context, reportID int64, question, 
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, reportID, question, answer, model, timestamp(),
 		completion.PromptTokens, completion.CompletionTokens, completion.TotalTokens)
 	return err
+}
+
+func (s *taskStore) saveAIReportSummary(ctx context.Context, reportID int64, answer, model string, completion *ai.Completion) error {
+	if completion == nil {
+		completion = &ai.Completion{}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM web_ai_answers WHERE report_id = ? AND question = ?`, reportID, aiReportSummaryQuestion); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO web_ai_answers(report_id, question, answer, model, created_at, prompt_tokens, completion_tokens, total_tokens)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, reportID, aiReportSummaryQuestion, answer, model, timestamp(),
+		completion.PromptTokens, completion.CompletionTokens, completion.TotalTokens); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *taskStore) aiAnswers(ctx context.Context, reportID int64) ([]AIAnswer, error) {
@@ -64,6 +88,34 @@ func compactReportContext(record *ReportRecord) (string, error) {
 		"position": report.Position, "recommendations": report.Recommendations,
 		"watchlist": report.Watchlist, "warnings": report.Warnings,
 		"value_monthly": report.ValueMonthly, "value_quarterly": report.ValueQuarterly,
+	}
+	encoded, err := json.Marshal(contextValue)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func fullReportContext(record *ReportRecord, snapshot *portfolio.Ledger) (string, error) {
+	if record == nil || record.Report == nil {
+		return "", fmt.Errorf("报告内容为空")
+	}
+	contextValue := map[string]any{
+		"report_id":        record.ID,
+		"task_id":          record.TaskID,
+		"kind":             record.Kind,
+		"task_status":      record.TaskStatus,
+		"report_version":   record.ReportVersion,
+		"generated_at":     record.GeneratedAt,
+		"trade_date":       record.TradeDate,
+		"target_date":      record.TargetDate,
+		"code_version":     record.CodeVersion,
+		"strategy_version": record.StrategyVersion,
+		"data_version":     record.DataVersion,
+		"report":           record.Report,
+	}
+	if snapshot != nil {
+		contextValue["portfolio_snapshot"] = snapshot.Transactions
 	}
 	encoded, err := json.Marshal(contextValue)
 	if err != nil {

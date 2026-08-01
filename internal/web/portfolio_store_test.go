@@ -147,7 +147,7 @@ func TestPortfolioHTTPCreateRequiresCSRFAndRendersPage(t *testing.T) {
 	defer server.Close()
 
 	values := url.Values{
-		"date": {"20260102"}, "code": {"000001.SZ"}, "action": {"buy"},
+		"date": {"2026-01-02"}, "code": {"000001"}, "action": {"buy"},
 		"shares": {"100"}, "price": {"10.5"},
 	}
 	request := httptest.NewRequest(http.MethodPost, "/portfolio/transactions", strings.NewReader(values.Encode()))
@@ -170,7 +170,23 @@ func TestPortfolioHTTPCreateRequiresCSRFAndRendersPage(t *testing.T) {
 	request = httptest.NewRequest(http.MethodGet, "/portfolio", nil)
 	response = httptest.NewRecorder()
 	server.mux.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "000001.SZ") || !strings.Contains(response.Body.String(), "当前持仓") {
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "000001") || strings.Contains(body, "000001.SZ") || !strings.Contains(body, "当前持仓") || !strings.Contains(body, `type="date"`) {
 		t.Fatalf("portfolio page status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestNormalizePortfolioDateAndSixDigitCode(t *testing.T) {
+	tests := []struct{ input, want string }{
+		{"600000", "600000.SH"}, {"000001", "000001.SZ"}, {"300750", "300750.SZ"}, {"430047", "430047.BJ"}, {"830001", "830001.BJ"}, {"920118", "920118.BJ"}, {"900901", "900901.SH"},
+		{"600000.sh", "600000.SH"},
+	}
+	for _, test := range tests {
+		if got := normalizePortfolioCode(test.input); got != test.want {
+			t.Errorf("normalizePortfolioCode(%q)=%q want=%q", test.input, got, test.want)
+		}
+	}
+	if got := normalizePortfolioDate("2026-08-01"); got != "20260801" {
+		t.Fatalf("normalizePortfolioDate()=%q", got)
 	}
 }
