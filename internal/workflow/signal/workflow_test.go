@@ -12,17 +12,37 @@ import (
 	"quant/internal/data"
 	"quant/internal/dataset"
 	"quant/internal/news"
+	"quant/internal/portfolio"
 	"quant/internal/realtime"
 )
 
 func TestLoadPortfolioSummaryIgnoresMissingPortfolioFile(t *testing.T) {
-	summary, err := loadPortfolioSummary(filepath.Join(t.TempDir(), "missing.yaml"), &dataset.Dataset{})
+	summary, err := loadPortfolioSummary(filepath.Join(t.TempDir(), "missing.yaml"), nil, &dataset.Dataset{})
 
 	if err != nil {
 		t.Fatalf("loadPortfolioSummary() error = %v, want nil", err)
 	}
 	if summary != nil {
 		t.Fatalf("summary = %+v, want nil", summary)
+	}
+}
+
+func TestLoadPortfolioSummaryUsesProvidedLedger(t *testing.T) {
+	ledger := &portfolio.Ledger{Transactions: []portfolio.Transaction{{
+		Date: "20260102", Code: "000001.SZ", Action: "buy", Shares: 100, Price: 10,
+	}}}
+	ds := &dataset.Dataset{
+		CodeMap: map[string][]data.DailyBar{
+			"000001.SZ": {{TsCode: "000001.SZ", TradeDate: "20260103", RawClose: 11}},
+		},
+		StockNames: map[string]string{"000001.SZ": "平安银行"},
+	}
+	summary, err := loadPortfolioSummary("malformed-or-missing.yaml", ledger, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Holdings) != 1 || summary.Holdings[0].Code != "000001.SZ" {
+		t.Fatalf("summary=%+v", summary)
 	}
 }
 
@@ -49,7 +69,7 @@ func TestLoadPortfolioSummaryReturnsMalformedPortfolioError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := loadPortfolioSummary(path, &dataset.Dataset{})
+	_, err := loadPortfolioSummary(path, nil, &dataset.Dataset{})
 
 	if err == nil {
 		t.Fatal("loadPortfolioSummary() error = nil, want error")

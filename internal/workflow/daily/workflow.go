@@ -10,6 +10,7 @@ import (
 
 	"quant/internal/config"
 	"quant/internal/data"
+	"quant/internal/portfolio"
 	"quant/internal/realtime"
 	"quant/internal/workflow/sectorbuild"
 	signalworkflow "quant/internal/workflow/signal"
@@ -38,6 +39,7 @@ type Progress func(Step)
 type Options struct {
 	Config              *config.Config
 	PortfolioPath       string
+	PortfolioLedger     *portfolio.Ledger
 	ForwardDir          string
 	TopN                int
 	WatchN              int
@@ -154,6 +156,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			MarketRealtime:      inTradingHours,
 			MarketRefreshWindow: opts.MarketRefreshWindow,
 			PortfolioPath:       opts.PortfolioPath,
+			PortfolioLedger:     opts.PortfolioLedger,
 			ForwardDir:          opts.ForwardDir,
 			RealtimeProvider:    provider,
 		})

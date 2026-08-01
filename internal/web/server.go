@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,16 +26,17 @@ type Options struct {
 }
 
 type Server struct {
-	store  *taskStore
-	runner *taskRunner
-	mux    *http.ServeMux
+	store         *taskStore
+	runner        *taskRunner
+	mux           *http.ServeMux
+	portfolioPath string
 }
 
 func New(opts Options) (*Server, error) {
 	if opts.Config == nil {
 		return nil, fmt.Errorf("缺少配置")
 	}
-	return newServer(opts, defaultExecutor(opts))
+	return newServer(opts, nil)
 }
 
 func newServer(opts Options, execute taskExecutor) (*Server, error) {
@@ -55,30 +57,67 @@ func newServer(opts Options, execute taskExecutor) (*Server, error) {
 		store.close()
 		return nil, fmt.Errorf("恢复中断任务: %w", err)
 	}
-	server := &Server{store: store}
+	server := &Server{store: store, portfolioPath: opts.PortfolioPath}
+	if execute == nil {
+		execute = defaultExecutor(opts, store)
+	}
 	server.runner = newTaskRunner(store, execute)
 	server.mux = http.NewServeMux()
 	server.mux.HandleFunc("GET /healthz", server.handleHealth)
 	server.mux.HandleFunc("POST /tasks/daily", server.handleCreateDaily)
+	server.mux.HandleFunc("POST /portfolio/import-yaml", server.handlePortfolioImport)
+	server.mux.HandleFunc("GET /portfolio/export-yaml", server.handlePortfolioExport)
 	server.mux.HandleFunc("GET /tasks/", server.handleTask)
 	server.mux.HandleFunc("GET /", server.handleHome)
 	server.runner.start()
 	return server, nil
 }
 
-func defaultExecutor(opts Options) taskExecutor {
+func defaultExecutor(opts Options, store *taskStore) taskExecutor {
 	return func(ctx context.Context, update func(string)) (*DailyReport, error) {
+		ledger, err := store.portfolioLedger(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("加载 SQLite 交易流水: %w", err)
+		}
 		result, err := daily.Run(ctx, daily.Options{
-			Config:        opts.Config,
-			PortfolioPath: opts.PortfolioPath,
-			TopN:          10,
-			WatchN:        5,
+			Config:          opts.Config,
+			PortfolioLedger: ledger,
+			TopN:            10,
+			WatchN:          5,
 			Progress: func(step daily.Step) {
 				update(fmt.Sprintf("%s：%s", step.Name, step.Detail))
 			},
 		})
 		return reportFromDaily(result), err
 	}
+}
+
+func (s *Server) handlePortfolioImport(w http.ResponseWriter, r *http.Request) {
+	if s.portfolioPath == "" {
+		http.Error(w, "未配置 YAML 持仓路径", http.StatusBadRequest)
+		return
+	}
+	result, err := s.store.importPortfolioYAML(r.Context(), s.portfolioPath)
+	if errors.Is(err, ErrPortfolioAlreadyImported) {
+		http.Redirect(w, r, "/?portfolio=already-imported", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		http.Redirect(w, r, "/?portfolio=import-error&detail="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/?portfolio=imported&count=%d", result.TransactionCount), http.StatusSeeOther)
+}
+
+func (s *Server) handlePortfolioExport(w http.ResponseWriter, r *http.Request) {
+	contents, err := s.store.exportPortfolioYAML(r.Context())
+	if err != nil {
+		http.Error(w, "导出交易流水失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="portfolio.yaml"`)
+	_, _ = w.Write(contents)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +145,18 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "读取任务列表失败", http.StatusInternalServerError)
 		return
 	}
-	data := homePageData{Tasks: tasks, Error: r.URL.Query().Get("error")}
+	transactions, portfolioErr := s.store.portfolioTransactions(r.Context(), false)
+	data := homePageData{
+		Tasks:           tasks,
+		Error:           r.URL.Query().Get("error"),
+		PortfolioStatus: r.URL.Query().Get("portfolio"),
+		PortfolioDetail: r.URL.Query().Get("detail"),
+		PortfolioCount:  len(transactions),
+	}
+	if portfolioErr != nil {
+		data.PortfolioStatus = "read-error"
+		data.PortfolioDetail = portfolioErr.Error()
+	}
 	for _, task := range tasks {
 		if task.Status == TaskQueued || task.Status == TaskRunning {
 			data.HasActive = true
@@ -167,10 +217,13 @@ func parseTaskID(path string) (int64, error) {
 }
 
 type homePageData struct {
-	Tasks     []Task
-	HasActive bool
-	Error     string
-	Refresh   bool
+	Tasks           []Task
+	HasActive       bool
+	Error           string
+	Refresh         bool
+	PortfolioStatus string
+	PortfolioDetail string
+	PortfolioCount  int
 }
 
 type taskPageData struct {
@@ -216,6 +269,12 @@ const homeTemplate = `{{define "body"}}
 <section class="card"><h2>日常日终任务</h2><p class="muted">依次刷新日线、涨跌停价、资金流、指数与板块快照，然后生成结构化日报。数据写入任务始终串行执行。</p>
 {{if eq .Error "active"}}<p class="error">已有日终任务正在运行或排队，请先等待完成。</p>{{end}}
 <form method="post" action="/tasks/daily">{{if .HasActive}}<button disabled>日终任务运行中</button>{{else}}<button type="submit">运行日常日终任务</button>{{end}}</form></section>
+<section class="card"><h2>交易流水</h2><p>SQLite 当前保存 {{.PortfolioCount}} 笔有效交易，是 Web 日报的持仓数据来源。</p>
+{{if eq .PortfolioStatus "imported"}}<p class="success">YAML 交易流水已成功导入。</p>{{end}}
+{{if eq .PortfolioStatus "already-imported"}}<p class="muted">该 YAML 文件已经导入，无需重复操作。</p>{{end}}
+{{if or (eq .PortfolioStatus "import-error") (eq .PortfolioStatus "read-error")}}<p class="error">交易流水操作失败：{{.PortfolioDetail}}</p>{{end}}
+<form method="post" action="/portfolio/import-yaml" style="display:inline-block;margin-right:8px"><button type="submit">从 portfolio.yaml 导入</button></form><a href="/portfolio/export-yaml">导出 YAML</a>
+<p class="muted">导入只允许在 SQLite 流水为空时执行，且同一文件不会重复导入。</p></section>
 <section class="card"><h2>最近任务</h2>{{if .Tasks}}<table><thead><tr><th>编号</th><th>状态</th><th>创建时间</th><th>进度 / 结果</th></tr></thead><tbody>{{range .Tasks}}<tr><td><a href="/tasks/{{.ID}}">#{{.ID}}</a></td><td><span class="tag">{{.Status}}</span></td><td>{{shortTime .CreatedAt}}</td><td>{{.Message}}{{if .Error}}<div class="error">{{.Error}}</div>{{end}}</td></tr>{{end}}</tbody></table>{{else}}<p class="muted">还没有任务。首次点击上方按钮即可运行。</p>{{end}}</section>
 <section class="card"><h2>本期范围</h2><p class="muted">当前仅允许本机访问的日终任务与报告浏览。持仓录入、交易流水和 AI 问答将在报告数据稳定后进入下一期。</p></section>{{end}}`
 

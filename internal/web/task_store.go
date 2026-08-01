@@ -83,6 +83,49 @@ var schemaMigrations = []schemaMigration{
 			CREATE INDEX IF NOT EXISTS idx_web_task_events_task_id ON web_task_events(task_id, id);
 		`,
 	},
+	{
+		version: 2,
+		name:    "portfolio transactions and audit log",
+		sql: `
+			CREATE TABLE IF NOT EXISTS portfolio_transactions (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				trade_date TEXT NOT NULL,
+				code TEXT NOT NULL,
+				action TEXT NOT NULL CHECK(action IN ('buy', 'sell')),
+				shares REAL NOT NULL CHECK(shares > 0),
+				price REAL NOT NULL CHECK(price > 0),
+				comment TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'void')),
+				source TEXT NOT NULL DEFAULT 'web',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				version INTEGER NOT NULL DEFAULT 1
+			);
+			CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_date_id
+				ON portfolio_transactions(trade_date, id);
+			CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_code_status
+				ON portfolio_transactions(code, status);
+			CREATE TABLE IF NOT EXISTS portfolio_audit_logs (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				transaction_id INTEGER,
+				operation TEXT NOT NULL,
+				before_json TEXT NOT NULL DEFAULT '',
+				after_json TEXT NOT NULL DEFAULT '',
+				source TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY(transaction_id) REFERENCES portfolio_transactions(id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_portfolio_audit_transaction
+				ON portfolio_audit_logs(transaction_id, id);
+			CREATE TABLE IF NOT EXISTS portfolio_imports (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				source_path TEXT NOT NULL,
+				source_sha256 TEXT NOT NULL UNIQUE,
+				transaction_count INTEGER NOT NULL,
+				imported_at TEXT NOT NULL
+			);
+		`,
+	},
 }
 
 func openTaskStore(path string) (*taskStore, error) {

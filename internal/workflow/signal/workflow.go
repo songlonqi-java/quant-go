@@ -30,6 +30,7 @@ type Options struct {
 	MarketRealtime      bool
 	MarketRefreshWindow time.Duration
 	PortfolioPath       string
+	PortfolioLedger     *portfolio.Ledger
 	ForwardDir          string
 	NewsAnalyzer        NewsAnalyzer
 	RealtimeProvider    realtime.Provider
@@ -118,7 +119,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	result.NewsSummary, result.NewsErr = analyzeNews(ctx, cfg.Data.RawDir, opts.NewsAnalyzer)
 	result.SectorReport, result.SectorErr = sector.LoadReport(cfg.Data.RawDir, ds.LatestDate)
 
-	portfolioSummary, err := loadPortfolioSummary(opts.PortfolioPath, ds)
+	portfolioSummary, err := loadPortfolioSummary(opts.PortfolioPath, opts.PortfolioLedger, ds)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +228,10 @@ func fetchMarketRealtime(provider realtime.Provider, codeMap map[string][]data.D
 	return paced.FetchPaced(market.SortedQuoteCodes(codeMap), window)
 }
 
-func loadPortfolioSummary(path string, ds *dataset.Dataset) (*portfolio.Summary, error) {
+func loadPortfolioSummary(path string, ledger *portfolio.Ledger, ds *dataset.Dataset) (*portfolio.Summary, error) {
+	if ledger != nil {
+		return portfolio.Analyze(ledger, ds.CodeMap, ds.StockNames), nil
+	}
 	ledger, err := portfolio.Load(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

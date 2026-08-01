@@ -22,6 +22,14 @@ go build -o quant-web ./cmd/quant-web/
 
 健康检查为 `GET /healthz`，返回 `ok`。
 
+## Web 交易流水
+
+Web 使用 `web.db` 中的 SQLite 交易流水作为唯一持仓数据来源。CLI 仍可继续读取 `portfolio.yaml`，但 Web 不会在后台自动同步 YAML，避免两个来源相互覆盖。
+
+首次升级后，可在首页点击“从 portfolio.yaml 导入”。导入会先校验日期、股票代码、买卖方向、股数、价格以及历史任一时点是否超卖，然后在一个事务中写入交易和审计记录。只有 SQLite 流水为空时允许导入，同一个 YAML 文件不会重复导入。首页的“导出 YAML”可随时下载当前有效流水，作为备份或供 CLI 使用。
+
+数据库迁移会自动创建 `portfolio_transactions`、`portfolio_audit_logs` 和 `portfolio_imports`，不需要安装新的服务。当前页面只提供导入和导出；逐笔录入、修改备注与撤销记录属于持仓页面的下一小步。
+
 ## 日终任务
 
 点击“运行日常日终任务”后，后台按顺序执行：
