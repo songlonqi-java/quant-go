@@ -7,34 +7,6 @@ import (
 	"quant/internal/data"
 )
 
-func TestDonchianBreaksPreviousChannel(t *testing.T) {
-	bars := []data.DailyBar{
-		strategyBar("20260101", 10, 11, 9, 10),
-		strategyBar("20260102", 10, 12, 9.5, 11),
-		strategyBar("20260103", 11, 12.5, 10.5, 12),
-		strategyBar("20260104", 12, 13, 11.5, 12.6),
-	}
-	s := NewDonchian(3)
-
-	if got := s.Signal(bars, 3); got != Buy {
-		t.Fatalf("Signal() = %s, want BUY", got)
-	}
-}
-
-func TestDonchianBreaksPreviousLowerChannel(t *testing.T) {
-	bars := []data.DailyBar{
-		strategyBar("20260101", 10, 11, 9, 10),
-		strategyBar("20260102", 10, 12, 9.5, 11),
-		strategyBar("20260103", 11, 12.5, 10.5, 10),
-		strategyBar("20260104", 10, 10.3, 8.8, 8.9),
-	}
-	s := NewDonchian(3)
-
-	if got := s.Signal(bars, 3); got != Sell {
-		t.Fatalf("Signal() = %s, want SELL", got)
-	}
-}
-
 func TestDividendDeviationRequiresSensibleHighDividend(t *testing.T) {
 	bars := dividendDeviationBars()
 	s := NewDividendDeviation(3, 0.9, 1.2)
@@ -67,62 +39,6 @@ func TestDividendDeviationRequiresDividendData(t *testing.T) {
 	s := NewDividendDeviation(3, 0.9, 1.2)
 	if got := s.Signal(dividendDeviationBars(), 3); got != Hold {
 		t.Fatalf("Signal() = %s, want HOLD when dividend data is unavailable", got)
-	}
-}
-
-func TestWilliamsRScoreRewardsOversoldState(t *testing.T) {
-	bars := []data.DailyBar{
-		strategyBar("20260101", 10, 10.2, 9.8, 10),
-		strategyBar("20260102", 10, 10.1, 9.5, 9.7),
-		strategyBar("20260103", 9.7, 9.8, 9.1, 9.2),
-		strategyBar("20260104", 9.2, 9.3, 8.9, 9.0),
-	}
-	s := NewWilliamsR(3, -80, -20)
-	if score := s.Score(bars, 3); score <= 0 {
-		t.Fatalf("Score() = %.2f, want positive score for oversold %%R", score)
-	}
-}
-
-func TestLimitUpDoesNotSellUnrelatedDownDay(t *testing.T) {
-	bars := make([]data.DailyBar, 12)
-	for i := range bars {
-		bars[i] = strategyBar(strategyDate(i), 10, 10.1, 9.9, 10)
-	}
-	bars[11] = strategyBar(strategyDate(11), 10, 10.1, 9.7, 9.8)
-
-	if got := NewLimitUp(9.5, 1.2).Signal(bars, 11); got != Hold {
-		t.Fatalf("Signal() = %s, want HOLD for unrelated down day", got)
-	}
-}
-
-func TestLimitUpSellsOnlyAfterConfirmedEntry(t *testing.T) {
-	bars := make([]data.DailyBar, 13)
-	for i := range bars {
-		bars[i] = strategyBar(strategyDate(i), 10, 10.1, 9.9, 10)
-	}
-	bars[10] = strategyBar(strategyDate(10), 10, 11, 10, 11)
-	bars[11] = strategyBar(strategyDate(11), 11.1, 11.3, 11.0, 11.2)
-	bars[11].Vol = 2000
-	bars[12] = strategyBar(strategyDate(12), 11.1, 11.2, 10.8, 11.0)
-	s := NewLimitUp(9.5, 1.2)
-
-	if got := s.Signal(bars, 11); got != Buy {
-		t.Fatalf("Signal() = %s, want BUY after confirmed limit-up entry", got)
-	}
-	if got := s.Signal(bars, 12); got != Sell {
-		t.Fatalf("Signal() = %s, want SELL only after previous entry", got)
-	}
-}
-
-func TestLimitUpUsesDirectionalExactPriceWithoutRequiringDownLimit(t *testing.T) {
-	bars := []data.DailyBar{
-		strategyBar("20260101", 10, 10, 10, 10),
-		strategyBar("20260102", 11, 11, 10.5, 11),
-	}
-	bars[1].UpLimit = 12
-	bars[1].DownLimit = 0
-	if NewLimitUp(9.5, 1.2).isLimitUpDay(bars, 1) {
-		t.Fatal("exact up-limit price must override generic 10% fallback even when down-limit is missing")
 	}
 }
 
@@ -221,24 +137,6 @@ func TestBollingerSellComparesPreviousCloseToPreviousUpperBand(t *testing.T) {
 	}
 }
 
-func TestMAStickyPreviousConvergenceUsesPreviousMA60(t *testing.T) {
-	bars := make([]data.DailyBar, 0, 61)
-	bars = append(bars, strategyBar(strategyDate(0), 200, 200, 200, 200))
-	middleClose := (6000.0 - 200.0 - 20.0*100.0) / 39.0
-	for i := 1; i <= 39; i++ {
-		bars = append(bars, strategyBar(strategyDate(i), middleClose, middleClose, middleClose, middleClose))
-	}
-	for i := 40; i <= 59; i++ {
-		bars = append(bars, strategyBar(strategyDate(i), 100, 100, 100, 100))
-	}
-	bars = append(bars, strategyBar(strategyDate(60), 10, 10, 10, 10))
-
-	s := NewMASticky(2.0, 1.5)
-	if got := s.Signal(bars, 60); got != Sell {
-		t.Fatalf("Signal() = %s, want SELL", got)
-	}
-}
-
 func TestStrategyScoresReturnFiniteWithZeroDenominators(t *testing.T) {
 	volumeBars := []data.DailyBar{
 		strategyBar("20260101", 10, 10, 10, 10),
@@ -271,20 +169,6 @@ func TestStrategyScoresReturnFiniteWithZeroDenominators(t *testing.T) {
 	}
 	assertFiniteScore(t, "atr_breakout", NewATRBreakout(2, 2, 2, 5, 1.5).Score(atrBars, 61))
 
-	stickyBars := make([]data.DailyBar, 61)
-	for i := range stickyBars {
-		stickyBars[i] = strategyBar(strategyDate(i), 100, 100, 100, 100)
-	}
-	assertFiniteScore(t, "ma_sticky", NewMASticky(2.0, 1.5).Score(stickyBars, 60))
-}
-
-func TestBottomReversalSignalHandlesZeroLow(t *testing.T) {
-	bars := longTrendBars(22)
-	bars[21].Low = 0
-
-	if got := NewBottomReversal(20, -15, 1.5, 100, 0.5).Signal(bars, 21); got != Hold {
-		t.Fatalf("Signal() = %s, want HOLD for invalid zero low", got)
-	}
 }
 
 func TestKDJValuesRemainStable(t *testing.T) {
@@ -349,6 +233,9 @@ func TestEarningsGrowthBuySignal(t *testing.T) {
 
 func TestRegistryAndMetadataContainTheSameStrategies(t *testing.T) {
 	registry := DefaultRegistry()
+	if registry.Count() != 13 {
+		t.Fatalf("registry count = %d, want 13 active strategies", registry.Count())
+	}
 	if registry.Count() != len(strategyMetadata) {
 		t.Fatalf("registry count = %d, metadata count = %d", registry.Count(), len(strategyMetadata))
 	}
@@ -356,6 +243,27 @@ func TestRegistryAndMetadataContainTheSameStrategies(t *testing.T) {
 		meta := MetadataForStrategy(name)
 		if meta.Name != name || meta.Group == GroupOther {
 			t.Fatalf("metadata for %s = %+v, want named non-default metadata", name, meta)
+		}
+	}
+	for name := range retiredStrategyMetadata {
+		if _, ok := registry.Get(name); ok {
+			t.Fatalf("retired strategy %s is still registered", name)
+		}
+	}
+}
+
+func TestDailyStrategyNamesFiltersSlowAndRetiredConfiguration(t *testing.T) {
+	names := []string{
+		"macd", "donchian", "quality_value", "rsi", "market_neutral_momentum", "trend_pullback",
+	}
+	want := []string{"macd", "rsi", "trend_pullback"}
+	got := DailyStrategyNames(names)
+	if len(got) != len(want) {
+		t.Fatalf("DailyStrategyNames() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("DailyStrategyNames() = %v, want %v", got, want)
 		}
 	}
 }

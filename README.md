@@ -83,13 +83,15 @@ go build -o quant-web ./cmd/quant-web/
 
 | 类型 | 策略 | 说明 |
 |------|------|------|
-| 短线 | `limit_up` `sar` `kdj` `roc` `williams_r` `rsi` `mfi` `bull_flag` `bollinger` `donchian` `volume_breakout` `bottom_reversal` | 1-21 天周期 |
-| 中线 | `ma_crossover` `etf_rotation` `macd` `ma_sticky` `value_ma60` `relative_strength` `market_neutral_momentum` `atr_breakout` `trend_pullback` | 20-120 天周期；`market_neutral_momentum` 为实验策略，默认不启用 |
+| 短线 | `sar` `kdj` `rsi` `bollinger` `volume_breakout` | 5-21 天周期 |
+| 中线 | `ma_crossover` `macd` `relative_strength` `atr_breakout` `trend_pullback` | 20-120 天周期 |
 | 长线 | `dividend_deviation` `quality_value` `earnings_growth` | 120-600 天周期 |
 
-详见 [docs/strategies.md](docs/strategies.md)。实验策略先用 `backtest --ensemble --ablation <策略名>` 与当前默认组合做净收益、回撤、换手和跨年稳定性对比，不会因为完成代码就自动进入日终推荐。
+详见 [docs/strategies.md](docs/strategies.md)。原 24 个策略的重叠关系、统一诊断结果和 11 个退役项见 [docs/strategy-autopsy.md](docs/strategy-autopsy.md)。保留不代表策略已经被证明有效；新增策略仍需先用组合消融比较净收益、回撤、换手和跨年稳定性。
 
 策略正确性审计和修复优先级见 [docs/strategy-audit.md](docs/strategy-audit.md)。
+
+新的研究主线不再继续叠加技术指标，而是建设可追溯的新闻事件库、AI 结构化事件抽取、板块/个股映射和严格事件回测，详见 [docs/event-driven-strategy.md](docs/event-driven-strategy.md)。
 
 ## 数据口径
 
@@ -125,7 +127,7 @@ quant-go/
 ├── internal/
 │   ├── config/                 # 配置管理
 │   ├── data/                   # Tushare API + Parquet 存储
-│   ├── strategy/               # 24 个策略实现（含 1 个实验策略）
+│   ├── strategy/               # 13 个策略实现（10 个日常、3 个慢频）
 │   ├── backtest/               # 回测引擎 + 绩效指标 + 策略消融
 │   ├── signal/                 # 多策略信号聚合
 │   ├── validation/             # 样本外推荐资格验证与权重证据
@@ -144,7 +146,9 @@ quant-go/
 |------|------|
 | [docs/commands.md](docs/commands.md) | 完整 CLI 命令参考 |
 | [docs/strategies.md](docs/strategies.md) | 全部策略详解 |
+| [docs/strategy-autopsy.md](docs/strategy-autopsy.md) | 指标尸检、去重依据与退役清单 |
 | [docs/strategy-audit.md](docs/strategy-audit.md) | 策略审计、P0 修复状态与后续路线 |
+| [docs/event-driven-strategy.md](docs/event-driven-strategy.md) | 事件驱动量化、AI 职责边界与分阶段实施路线 |
 | [docs/portfolio.md](docs/portfolio.md) | 持仓管理流程 |
 | [docs/prompts.md](docs/prompts.md) | AI 提示语速查 |
 | [docs/web.md](docs/web.md) | 本地 Web 控制台第一期 |

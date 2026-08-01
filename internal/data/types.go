@@ -314,4 +314,5 @@ type NewsItem struct {
 	Content  string `parquet:"content"`
 	Title    string `parquet:"title"`
 	Source   string `parquet:"source"`
+	URL      string `parquet:"url"`
 }

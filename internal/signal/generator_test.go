@@ -16,7 +16,7 @@ func TestGenerateWithContextLimitsPerHorizon(t *testing.T) {
 		"000002.SZ": signalBars("000002.SZ"),
 	}
 	strategies := []strategy.Strategy{
-		fixedStrategy{name: "limit_up", score: 10},
+		fixedStrategy{name: "volume_breakout", score: 10},
 		fixedStrategy{name: "ma_crossover", score: 10},
 		fixedStrategy{name: "dividend_deviation", score: 10},
 	}
@@ -42,7 +42,7 @@ func TestGenerateWithContextAndMoneyflowAddsConfirmation(t *testing.T) {
 		"000001.SZ": signalBars("000001.SZ"),
 	}
 	strategies := []strategy.Strategy{
-		fixedStrategy{name: "limit_up", score: 10},
+		fixedStrategy{name: "volume_breakout", score: 10},
 	}
 	store := data.NewMoneyflowStore([]data.Moneyflow{
 		{

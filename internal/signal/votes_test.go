@@ -14,15 +14,14 @@ func TestCorrelatedReversalSignalsDoNotCreateFormalConsensus(t *testing.T) {
 	strategies := []strategy.Strategy{
 		fixedVoteStrategy{name: "rsi", signal: strategy.Buy},
 		fixedVoteStrategy{name: "kdj", signal: strategy.Buy},
-		fixedVoteStrategy{name: "williams_r", signal: strategy.Buy},
-		fixedVoteStrategy{name: "mfi", signal: strategy.Buy},
+		fixedVoteStrategy{name: "bollinger", signal: strategy.Buy},
 	}
 	results := GenerateWithContext(map[string][]data.DailyBar{"000001.SZ": voteBars()}, strategies, 0, nil, &market.MarketStatus{Sentiment: "偏多"})
 	if len(results) != 1 {
 		t.Fatalf("results = %+v", results)
 	}
 	got := results[0]
-	if got.BuyCount != 4 || got.BuyGroupCount != 1 || got.EffectiveBuyVotes != 1.5 {
+	if got.BuyCount != 3 || got.BuyGroupCount != 1 || got.EffectiveBuyVotes != 1.5 {
 		t.Fatalf("vote metrics = raw %d, effective %.2f/%d groups", got.BuyCount, got.EffectiveBuyVotes, got.BuyGroupCount)
 	}
 	decision := ApplyPositionPolicy(results, &market.MarketStatus{Sentiment: "偏多"})

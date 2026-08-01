@@ -75,7 +75,7 @@
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `-s, --strategy` | 指定策略（逗号分隔），默认 17 个日常策略 | `-s macd,rsi,bull_flag` |
+| `-s, --strategy` | 指定策略（逗号分隔），默认 10 个日常策略 | `-s macd,rsi,volume_breakout` |
 | `-n, --top` | 每个周期买入/卖出各最多 N 条 | `-n 5` |
 | `--watch` | 额外显示观察机会数量，默认 15，0 表示关闭 | `--watch 15` |
 | `-f, --format` | `table` / `csv` / `json` | `-f json` |
@@ -95,8 +95,6 @@
 `--watch` 会在正式买卖建议后追加“观察机会”榜。观察榜不等于买入推荐，主要收纳单策略较强、共振不足、排名靠后、存在卖出冲突、被仓位/风控过滤的候选，方便盘中人工跟踪，避免只看正式榜而错过潜在机会。
 
 `signal` 会自动把每个周期前 5 个合格买入候选写入 `data/forward_test/`。短线验证 1/3/5 日，中线验证 10/20/40 日，长线验证 60/120/250 日。如果仓位策略判断应空仓，会写入一条 `CASH` 记录，表示当天不新增买入。
-如果最近两个交易日缺少真实价字段，`signal` 会跳过 `limit_up` 并给出警告；重新拉取行情后会恢复。如果本地有 `stk_limit` 数据，涨停策略会优先使用精确涨停价判断。
-
 当 `data/raw/validation/evidence.json` 已由 `validate build` 生成时，正式买入还必须通过历史独立日期样本量、样本外正收益折数与收缩后期望收益门槛；未通过的结果仅保留在观察机会中。表格会以“日期样本/交易”同时展示两个数字，CSV 和 JSON 也会分开输出；资格门槛只使用日期簇数，不使用同日股票数。若证据文件缺失，命令会提示先构建，但不会中断日常信号输出。
 
 当使用 `PrintWithWatch` 的 CLI 输出时，JSON 会返回 `{ "signals": [...], "watchlist": [...] }`，CSV 会增加 `类别` 和 `观察原因` 字段，用于区分正式信号和观察机会。
@@ -125,12 +123,12 @@
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `-s, --strategy` | 回测策略 | `-s value_ma60,macd` |
+| `-s, --strategy` | 回测策略 | `-s quality_value,macd` |
 | `--start / --end` | 日期范围 | `--start 20250101` |
 | `--capital` | 初始资金 | `--capital 200000` |
 | `-n, --top` | 单策略模式：按代码前 N 只；组合模式：每周期候选数 | `-n 20` |
 | `--ensemble` | 多股票、多策略共享资金的组合回测 | `--ensemble` |
-| `--ablation <策略>` | 仅组合模式；对比当前基线与加入指定策略后的结果 | `--ensemble --ablation market_neutral_momentum` |
+| `--ablation <策略>` | 仅组合模式；对比当前基线与加入指定策略后的结果 | `--ensemble --ablation quality_value` |
 | `--allow-adjusted-trades` | 允许用复权价近似成交价，仅用于旧数据临时验证 | `--allow-adjusted-trades` |
 
 绩效指标：总收益、年化收益、最大回撤、夏普比率、卡玛比率、胜率、盈亏比
@@ -139,8 +137,8 @@
 
 ```bash
 ./go-quant backtest --ensemble --start 20210101 --end 20260731
-./go-quant backtest --ensemble -s sar,roc,kdj,bull_flag,limit_up -n 5
-./go-quant backtest --ensemble --ablation market_neutral_momentum --start 20210101 --end 20260731
+./go-quant backtest --ensemble -s sar,kdj,rsi,bollinger,volume_breakout -n 5
+./go-quant backtest --ensemble --ablation quality_value --start 20230101 --end 20260731
 ```
 
 `--ablation` 会从基线策略列表中移除目标策略，再用一组全新策略实例把它加回实验组，避免两次回测共享状态。两组只共用一次准备的不可变排序行情、日期索引、代码顺序和历史市场状态，策略缓存、现金和持仓状态仍完全隔离。报告对比净收益、最大回撤、夏普、胜率、盈亏比、半边换手率和逐年收益改善次数。它是研究工具，不读取当前 `evidence.json`，也不会自动修改默认策略。
@@ -166,7 +164,7 @@
 ```bash
 ./go-quant validate build
 ./go-quant validate build --start 20200101 --end 20251231 --workers 16
-./go-quant validate build -s macd,roc,bull_flag
+./go-quant validate build -s macd,rsi,trend_pullback
 ```
 
 该命令回放“策略信号 → 市场仓位策略 → 次日可成交入场 → 有状态退出”完整链路，在历史后半段按时间顺序切分样本外折，并按短、中、长周期记录策略组合与市场状态的胜率、期望收益、波动和最大回撤。同一股票+周期在上一笔完整交易结束前不再重复入样；每折开头分别设置短线 5 日、中线 20 日、长线 120 日的 embargo，折尾不足以完成实际退出的样本直接清除。同一信号日的多只股票收益先等权合成一个日期簇，再计算胜率、期望、波动、回撤和正收益折，避免把同日市场共振当成大量独立样本。
@@ -179,7 +177,7 @@
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `-s, --strategy` | 回放策略，默认使用 `signal.default_strategies` | `-s macd,roc` |
+| `-s, --strategy` | 回放策略，默认使用 `signal.default_strategies` | `-s macd,rsi` |
 | `--start / --end` | 限定回放信号日期 | `--start 20200101 --end 20251231` |
 | `--workers` | 并行回放工作数，默认 GOMAXPROCS | `--workers 16` |
 | `--output` | 自定义证据文件路径 | `--output /tmp/evidence.json` |

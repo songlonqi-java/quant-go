@@ -101,13 +101,6 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	injectFundamentals(selectedStrategies, ds.Fundamentals)
 
 	priceQuality := ds.PriceQuality(2)
-	if !priceQuality.HasCompleteRawPrices() {
-		selectedStrategies = filterStrategies(selectedStrategies, map[string]bool{"limit_up": true})
-		strategyNames = strategyNamesFrom(selectedStrategies)
-		if len(selectedStrategies) == 0 {
-			return nil, fmt.Errorf("真实价字段缺失后没有可用策略")
-		}
-	}
 
 	topN := opts.TopN
 	if topN == 0 {
@@ -317,7 +310,8 @@ func shouldRecordCash(decision signals.PositionDecision) bool {
 func selectStrategies(requested, defaults []string) ([]strategy.Strategy, []string, error) {
 	reg := strategy.DefaultRegistry()
 	names := requested
-	if len(names) == 0 {
+	explicit := len(names) > 0
+	if !explicit {
 		names = defaults
 	}
 	var selected []strategy.Strategy
@@ -325,6 +319,9 @@ func selectStrategies(requested, defaults []string) ([]strategy.Strategy, []stri
 	for _, name := range names {
 		s, ok := reg.Get(name)
 		if !ok {
+			if explicit {
+				return nil, nil, fmt.Errorf("未知策略: %s", name)
+			}
 			continue
 		}
 		selected = append(selected, s)
@@ -345,25 +342,6 @@ func injectFundamentals(strategies []strategy.Strategy, store *data.FundamentalS
 			u.SetFundStore(store)
 		}
 	}
-}
-
-func filterStrategies(strategies []strategy.Strategy, skip map[string]bool) []strategy.Strategy {
-	filtered := make([]strategy.Strategy, 0, len(strategies))
-	for _, s := range strategies {
-		if skip[s.Name()] {
-			continue
-		}
-		filtered = append(filtered, s)
-	}
-	return filtered
-}
-
-func strategyNamesFrom(strategies []strategy.Strategy) []string {
-	names := make([]string, 0, len(strategies))
-	for _, s := range strategies {
-		names = append(names, s.Name())
-	}
-	return names
 }
 
 func fetchRealtimeQuotes(provider realtime.Provider, results []signals.SignalResult, portfolioSummary *portfolio.Summary) (map[string]realtime.Quote, error) {

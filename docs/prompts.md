@@ -144,10 +144,10 @@ go build -o go-quant ./cmd/go-quant/
 ./go-quant signal -s macd,rsi,bollinger,ma_crossover -n 5
 
 短线专用策略组合：
-./go-quant signal -s sar,roc,kdj,bull_flag,limit_up,atr_breakout -n 10
+./go-quant signal -s sar,kdj,rsi,volume_breakout,atr_breakout -n 10
 
 中线专用策略组合：
-./go-quant signal -s ma_crossover,macd,value_ma60,trend_pullback -n 10
+./go-quant signal -s ma_crossover,macd,relative_strength,trend_pullback -n 10
 ```
 
 ```
@@ -248,9 +248,9 @@ signal 命令自动从新浪拉取最新 80 条新闻并缓存到 data/raw/news/
 
 ```
 回测短线策略组合：
-./go-quant backtest -s sar,roc,kdj,bull_flag,limit_up --start 20240101 --end 20241231
+./go-quant backtest -s sar,kdj,rsi,bollinger,volume_breakout --start 20240101 --end 20241231
 对比中线策略组合：
-./go-quant backtest -s ma_crossover,macd,value_ma60 --start 20240101 --end 20241231
+./go-quant backtest -s ma_crossover,macd,relative_strength --start 20240101 --end 20241231
 看哪个组合在 2024 年表现更好。
 ```
 

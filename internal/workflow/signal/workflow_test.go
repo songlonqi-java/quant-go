@@ -29,6 +29,13 @@ func TestLoadPortfolioSummaryIgnoresMissingPortfolioFile(t *testing.T) {
 	}
 }
 
+func TestSelectStrategiesRejectsExplicitRetiredName(t *testing.T) {
+	_, _, err := selectStrategies([]string{"donchian"}, []string{"macd"})
+	if err == nil || !strings.Contains(err.Error(), "未知策略: donchian") {
+		t.Fatalf("selectStrategies() error = %v, want retired name rejected", err)
+	}
+}
+
 func TestLoadPortfolioSummaryUsesProvidedLedger(t *testing.T) {
 	ledger := &portfolio.Ledger{Transactions: []portfolio.Transaction{{
 		Date: "20260102", Code: "000001.SZ", Action: "buy", Shares: 100, Price: 10,
@@ -126,9 +133,9 @@ func TestRunUsesInvestableUniverseForMarketStatus(t *testing.T) {
 	rawDir := filepath.Join(root, "raw")
 	var bars []data.DailyBar
 	for i, code := range []string{"000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"} {
-		bars = append(bars, rocBars(code, 11.0+float64(i)*0.1)...)
+		bars = append(bars, volumeBreakoutBars(code, 11.0+float64(i)*0.1)...)
 	}
-	stale := rocBars("000005.SZ", 9.0)
+	stale := volumeBreakoutBars("000005.SZ", 9.0)
 	stale = stale[:len(stale)-1]
 	bars = append(bars, stale...)
 	if err := data.WriteParquetFile(filepath.Join(rawDir, "daily", "2026.parquet"), bars); err != nil {
@@ -148,7 +155,7 @@ func TestRunUsesInvestableUniverseForMarketStatus(t *testing.T) {
 	result, err := Run(context.Background(), Options{
 		Config: &config.Config{
 			Data:   config.DataConfig{RawDir: rawDir},
-			Signal: config.SignalConfig{DefaultStrategies: []string{"roc"}, TopN: 1},
+			Signal: config.SignalConfig{DefaultStrategies: []string{"volume_breakout"}, TopN: 1},
 		},
 		PortfolioPath:    filepath.Join(root, "portfolio.yaml"),
 		ForwardDir:       filepath.Join(root, "forward"),
@@ -172,17 +179,19 @@ func TestRunUsesInvestableUniverseForMarketStatus(t *testing.T) {
 	}
 }
 
-func rocBars(code string, finalClose float64) []data.DailyBar {
-	bars := make([]data.DailyBar, 0, 13)
-	for i := 0; i < 13; i++ {
+func volumeBreakoutBars(code string, finalClose float64) []data.DailyBar {
+	bars := make([]data.DailyBar, 0, 22)
+	for i := 0; i < 22; i++ {
 		closePrice := 10 + float64(i)*0.02
-		if i == 12 {
+		volume := 1000.0
+		if i == 21 {
 			closePrice = finalClose
+			volume = 2000
 		}
 		bars = append(bars, data.DailyBar{
 			TsCode: code, TradeDate: "202601" + twoDigit(i+1),
 			Open: closePrice - 0.01, High: closePrice + 0.02, Low: closePrice - 0.03, Close: closePrice,
-			Vol: 1000, RawOpen: closePrice - 0.01, RawHigh: closePrice + 0.02, RawLow: closePrice - 0.03, RawClose: closePrice, AdjFactor: 1,
+			Vol: volume, RawOpen: closePrice - 0.01, RawHigh: closePrice + 0.02, RawLow: closePrice - 0.03, RawClose: closePrice, AdjFactor: 1,
 		})
 	}
 	return bars

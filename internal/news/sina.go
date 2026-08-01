@@ -59,9 +59,19 @@ func FetchSinaNews(top int) ([]data.NewsItem, error) {
 			Title:    cleanHTML(d.Title),
 			Content:  cleanHTML(d.Intro),
 			Source:   d.Media,
+			URL:      firstNonEmpty(d.URL, d.WapURL),
 		})
 	}
 	return items, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func FetchSinaArticleContent(url string) string {

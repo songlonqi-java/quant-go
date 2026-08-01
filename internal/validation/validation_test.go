@@ -27,9 +27,9 @@ func TestBuildProducesOutOfSampleStatsWithFeasibleNextOpenEntry(t *testing.T) {
 	store, err := Build(BuildOptions{
 		CodeMap: codeMap,
 		Strategies: []strategy.Strategy{
-			alwaysBuyStrategy{name: "donchian"},
-			alwaysBuyStrategy{name: "limit_up"},
-			alwaysBuyStrategy{name: "bull_flag"},
+			alwaysBuyStrategy{name: "bollinger"},
+			alwaysBuyStrategy{name: "sar"},
+			alwaysBuyStrategy{name: "volume_breakout"},
 		},
 		Workers: 2,
 	})
@@ -91,7 +91,7 @@ func TestLoadRejectsPreClusterEvidence(t *testing.T) {
 }
 
 func TestStoreCompatibilityRejectsStrategyChangesAndStaleData(t *testing.T) {
-	strategies := []strategy.Strategy{alwaysBuyStrategy{name: "donchian"}}
+	strategies := []strategy.Strategy{alwaysBuyStrategy{name: "sar"}}
 	codeMap := map[string][]data.DailyBar{"000001.SZ": risingBars("000001.SZ", 10)}
 	fingerprint, err := StrategyFingerprint(strategies, 0.0003, 0.0001)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestStoreCompatibilityRejectsStrategyChangesAndStaleData(t *testing.T) {
 	if err := store.ValidateCompatibility(strategies, 0.0003, 0.0001, codeMap, nil, nil); err != nil {
 		t.Fatalf("matching evidence rejected: %v", err)
 	}
-	if err := store.ValidateCompatibility([]strategy.Strategy{alwaysBuyStrategy{name: "roc"}}, 0.0003, 0.0001, codeMap, nil, nil); err == nil {
+	if err := store.ValidateCompatibility([]strategy.Strategy{alwaysBuyStrategy{name: "macd"}}, 0.0003, 0.0001, codeMap, nil, nil); err == nil {
 		t.Fatal("changed strategy should invalidate evidence")
 	}
 	changed := map[string][]data.DailyBar{"000001.SZ": append([]data.DailyBar(nil), codeMap["000001.SZ"]...)}
@@ -130,7 +130,7 @@ func TestStoreCompatibilityRejectsStrategyChangesAndStaleData(t *testing.T) {
 }
 
 func TestStoreCompatibilityIncludesLiquidityAndStockMetadata(t *testing.T) {
-	strategies := []strategy.Strategy{alwaysBuyStrategy{name: "donchian"}}
+	strategies := []strategy.Strategy{alwaysBuyStrategy{name: "sar"}}
 	codeMap := map[string][]data.DailyBar{"000001.SZ": risingBars("000001.SZ", 10)}
 	stockInfos := map[string]data.StockInfo{
 		"000001.SZ": {TsCode: "000001.SZ", Name: "平安银行", ListDate: "19910403"},
@@ -175,9 +175,9 @@ func TestBuildAppliesLiquidityImpact(t *testing.T) {
 	store, err := Build(BuildOptions{
 		CodeMap: codeMap,
 		Strategies: []strategy.Strategy{
-			alwaysBuyStrategy{name: "donchian"},
-			alwaysBuyStrategy{name: "limit_up"},
-			alwaysBuyStrategy{name: "bull_flag"},
+			alwaysBuyStrategy{name: "bollinger"},
+			alwaysBuyStrategy{name: "sar"},
+			alwaysBuyStrategy{name: "volume_breakout"},
 		},
 		Liquidity: policy, ReferenceEquity: 100_000, Workers: 1,
 	})
@@ -222,7 +222,7 @@ func TestFeasibleReturnUsesSharedRoundTripCostModel(t *testing.T) {
 
 func TestAnnotateAndAllocateUseEvidenceEligibility(t *testing.T) {
 	store := &Store{Version: formatVersion, Stats: map[string]Stats{
-		"exact|short|偏多|donchian+roc+sar": {
+		"exact|short|偏多|bollinger+sar+volume_breakout": {
 			Trades: 80, Samples: 40, Wins: 24, ExpectedReturnPct: 2, VolatilityPct: 3,
 			AverageWinPct: 4, AverageLossPct: -2, MaxDrawdownPct: -8,
 			PositiveFolds: 3, FoldCount: 3,
@@ -232,9 +232,9 @@ func TestAnnotateAndAllocateUseEvidenceEligibility(t *testing.T) {
 		Horizon: strategy.HorizonShort, MarketSentiment: "偏多", BuyCount: 3,
 		TotalScore: 2, Confidence: 80, PositionPct: 10,
 		Strategies: map[string]signal.SignalDetail{
-			"donchian": {Signal: strategy.Buy},
-			"roc":      {Signal: strategy.Buy},
-			"sar":      {Signal: strategy.Buy},
+			"bollinger":       {Signal: strategy.Buy},
+			"sar":             {Signal: strategy.Buy},
+			"volume_breakout": {Signal: strategy.Buy},
 		},
 	}}
 	results = Annotate(results, store, Policy{MinSamples: 30, MinPositiveFolds: 2, PriorSamples: 20}, true)
@@ -282,7 +282,7 @@ func TestAnnotateNeverPromotesPeriodOnlyPrior(t *testing.T) {
 
 func TestAnnotateBroadPriorCannotRescueLosingExactEvidence(t *testing.T) {
 	store := &Store{Version: formatVersion, Stats: map[string]Stats{
-		"exact|short|偏多|donchian+roc+sar": {
+		"exact|short|偏多|bollinger+sar+volume_breakout": {
 			Trades: 80, Samples: 40, Wins: 20, ExpectedReturnPct: -1,
 			PositiveFolds: 2, FoldCount: 3,
 		},
@@ -303,11 +303,11 @@ func TestAnnotateBroadPriorCannotRescueLosingExactEvidence(t *testing.T) {
 
 func TestAnnotateDoesNotBypassSparseExactRegimeWithSignature(t *testing.T) {
 	store := &Store{Version: formatVersion, Stats: map[string]Stats{
-		"exact|short|偏多|donchian+roc+sar": {
+		"exact|short|偏多|bollinger+sar+volume_breakout": {
 			Trades: 4, Samples: 2, Wins: 2, ExpectedReturnPct: 3,
 			PositiveFolds: 1, FoldCount: 1,
 		},
-		"signature|short|donchian+roc+sar": {
+		"signature|short|bollinger+sar+volume_breakout": {
 			Trades: 100, Samples: 50, Wins: 35, ExpectedReturnPct: 2,
 			PositiveFolds: 3, FoldCount: 3,
 		},
@@ -321,7 +321,7 @@ func TestAnnotateDoesNotBypassSparseExactRegimeWithSignature(t *testing.T) {
 
 func TestAnnotateUsesSignatureWhenNoExactRegimeEvidenceExists(t *testing.T) {
 	store := &Store{Version: formatVersion, Stats: map[string]Stats{
-		"signature|short|donchian+roc+sar": {
+		"signature|short|bollinger+sar+volume_breakout": {
 			Trades: 100, Samples: 50, Wins: 35, ExpectedReturnPct: 2,
 			PositiveFolds: 3, FoldCount: 3,
 		},
@@ -351,9 +351,9 @@ func validationCandidate() signal.SignalResult {
 		Horizon: strategy.HorizonShort, MarketSentiment: "偏多", BuyCount: 3,
 		TotalScore: 2, Confidence: 80, PositionPct: 10,
 		Strategies: map[string]signal.SignalDetail{
-			"donchian": {Signal: strategy.Buy},
-			"roc":      {Signal: strategy.Buy},
-			"sar":      {Signal: strategy.Buy},
+			"bollinger":       {Signal: strategy.Buy},
+			"sar":             {Signal: strategy.Buy},
+			"volume_breakout": {Signal: strategy.Buy},
 		},
 	}
 }

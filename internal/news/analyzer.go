@@ -46,30 +46,34 @@ var stopWords = map[string]bool{
 }
 
 func Analyze(ctx context.Context, client *data.Client, rawDir string, topN int) (*NewsSummary, error) {
-	var allNews []data.NewsItem
-
-	localNews, _ := loadLocalNews(rawDir)
-	if len(localNews) > 0 {
-		allNews = localNews
+	records, migrated, err := loadNewsArchive(rawDir)
+	if err != nil {
+		return nil, fmt.Errorf("加载新闻事实库: %w", err)
 	}
+	var incoming []data.NewsItem
 
 	sinaNews, err := FetchSinaNews(80)
 	if err == nil && len(sinaNews) > 0 {
-		allNews = append(allNews, sinaNews...)
-		if len(allNews) > 0 {
-			saveLocalNews(rawDir, allNews)
-		}
+		incoming = append(incoming, sinaNews...)
 	}
 
-	if len(allNews) == 0 && client != nil && client.Token != "" {
+	if len(incoming) == 0 && client != nil && client.Token != "" {
 		today := time.Now().Format("20060102")
 		weekAgo := time.Now().AddDate(0, 0, -7).Format("20060102")
 		apiNews, err := client.FetchNews(ctx, weekAgo, today)
 		if err == nil && len(apiNews) > 0 {
-			allNews = append(allNews, apiNews...)
-			saveLocalNews(rawDir, allNews)
+			incoming = append(incoming, apiNews...)
 		}
 	}
+	if len(incoming) > 0 {
+		records = mergeNewsRecords(records, incoming, time.Now())
+	}
+	if migrated || len(incoming) > 0 {
+		if err := saveNewsArchive(rawDir, records); err != nil {
+			return nil, err
+		}
+	}
+	allNews := latestNewsItems(records)
 
 	if len(allNews) == 0 {
 		return nil, nil
@@ -284,52 +288,6 @@ func loadStockNameMap(rawDir string) map[string]string {
 		}
 	}
 	return names
-}
-
-func loadLocalNews(rawDir string) ([]data.NewsItem, error) {
-	path := rawDir + "/news/latest.parquet"
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var result []data.NewsItem
-	reader := parquet.NewReader(f, parquet.SchemaOf(&data.NewsItem{}))
-	defer reader.Close()
-	for {
-		var n data.NewsItem
-		if err := reader.Read(&n); err != nil {
-			break
-		}
-		result = append(result, n)
-	}
-	return result, nil
-}
-
-func saveLocalNews(rawDir string, items []data.NewsItem) error {
-	dir := rawDir + "/news"
-	os.MkdirAll(dir, 0755)
-	return writeNewsParquet(dir+"/latest.parquet", items)
-}
-
-func writeNewsParquet(path string, items []data.NewsItem) error {
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
-	}
-	writer := parquet.NewWriter(f)
-	for _, n := range items {
-		if err := writer.Write(n); err != nil {
-			f.Close()
-			os.Remove(tmp)
-			return err
-		}
-	}
-	writer.Close()
-	f.Close()
-	return os.Rename(tmp, path)
 }
 
 func minInt(a, b int) int {

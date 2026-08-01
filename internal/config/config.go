@@ -191,9 +191,7 @@ var defaultConfig = Config{
 	Signal: SignalConfig{
 		DefaultStrategies: []string{
 			"ma_crossover", "macd", "rsi", "bollinger",
-			"volume_breakout", "bull_flag",
-			"kdj", "williams_r", "donchian", "mfi",
-			"sar", "roc", "ma_sticky", "limit_up",
+			"volume_breakout", "kdj", "sar",
 			"relative_strength", "atr_breakout", "trend_pullback",
 		},
 		TopN: 20,

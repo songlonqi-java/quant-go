@@ -21,7 +21,7 @@ func TestPreparedPortfolioEnvironmentMatchesDirectReplayAndIsReusable(t *testing
 	}
 	newStrategies := func() []strategy.Strategy {
 		return []strategy.Strategy{
-			portfolioTestStrategy{name: "limit_up"},
+			portfolioTestStrategy{name: "volume_breakout"},
 			portfolioTestStrategy{name: "sar"},
 			portfolioTestStrategy{name: "kdj"},
 		}
@@ -70,7 +70,7 @@ func TestPreparedPortfolioEnvironmentMatchesDirectReplayAndIsReusable(t *testing
 
 func TestRunPortfolioRejectsInvalidPreparedEnvironment(t *testing.T) {
 	_, err := RunPortfolio(PortfolioOptions{
-		Environment: &PortfolioEnvironment{}, Strategies: []strategy.Strategy{portfolioTestStrategy{name: "limit_up"}},
+		Environment: &PortfolioEnvironment{}, Strategies: []strategy.Strategy{portfolioTestStrategy{name: "volume_breakout"}},
 		Config: Config{InitialCapital: 100_000, LotSize: 100},
 	})
 	if err == nil {
@@ -99,7 +99,7 @@ func TestPreparedPortfolioEnvironmentSupportsIndependentConcurrentRuns(t *testin
 			results[index], runErrors[index] = RunPortfolio(PortfolioOptions{
 				Environment: environment,
 				Strategies: []strategy.Strategy{
-					portfolioTestStrategy{name: "limit_up"}, portfolioTestStrategy{name: "sar"}, portfolioTestStrategy{name: "kdj"},
+					portfolioTestStrategy{name: "volume_breakout"}, portfolioTestStrategy{name: "sar"}, portfolioTestStrategy{name: "kdj"},
 				},
 				TopN: 1, Config: Config{InitialCapital: 100_000, LotSize: 100},
 				MaxTotalPct: 70, MaxSinglePct: 15, MaxSectorPct: 25,
@@ -125,7 +125,7 @@ func TestRunPortfolioUsesSharedAccountAggregationAndNextOpen(t *testing.T) {
 		portfolioBar("000001.SZ", "20260104", 10.4),
 	}
 	strategies := []strategy.Strategy{
-		portfolioTestStrategy{name: "limit_up"},
+		portfolioTestStrategy{name: "volume_breakout"},
 		portfolioTestStrategy{name: "sar"},
 		portfolioTestStrategy{name: "kdj"},
 	}
@@ -169,7 +169,7 @@ func TestRunPortfolioRecordsAuditableExecutionCosts(t *testing.T) {
 	result, err := RunPortfolio(PortfolioOptions{
 		CodeMap: map[string][]data.DailyBar{"000001.SZ": bars},
 		Strategies: []strategy.Strategy{
-			portfolioTestStrategy{name: "limit_up"}, portfolioTestStrategy{name: "sar"}, portfolioTestStrategy{name: "kdj"},
+			portfolioTestStrategy{name: "volume_breakout"}, portfolioTestStrategy{name: "sar"}, portfolioTestStrategy{name: "kdj"},
 		},
 		Moneyflows: data.NewMoneyflowStore([]data.Moneyflow{{
 			TsCode: "000001.SZ", TradeDate: "20260101", NetMfAmount: 100, BuyLgAmount: 100, BuyElgAmount: 100,
@@ -211,7 +211,7 @@ func TestRunPortfolioKeepsPreStartBarsForWarmup(t *testing.T) {
 		portfolioBar("000001.SZ", "20260103", 10.2),
 	}
 	strategies := []strategy.Strategy{
-		portfolioWarmupStrategy{name: "limit_up"},
+		portfolioWarmupStrategy{name: "volume_breakout"},
 		portfolioWarmupStrategy{name: "sar"},
 		portfolioWarmupStrategy{name: "kdj"},
 	}
@@ -246,7 +246,7 @@ func TestRunPortfolioManagedExitRecordsLimitDownDelay(t *testing.T) {
 	bars[6].RawOpen, bars[6].RawHigh, bars[6].RawLow, bars[6].RawClose = 9, 9, 9, 9
 	bars[6].DownLimit = 9
 	strategies := []strategy.Strategy{
-		portfolioBuyOnlyStrategy{name: "limit_up"},
+		portfolioBuyOnlyStrategy{name: "volume_breakout"},
 		portfolioBuyOnlyStrategy{name: "sar"},
 		portfolioBuyOnlyStrategy{name: "kdj"},
 	}
