@@ -42,6 +42,7 @@ func main() {
 
 	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "config.yaml", "配置文件路径")
 
+	rootCmd.AddCommand(dailyCmd())
 	rootCmd.AddCommand(fetchCmd())
 	rootCmd.AddCommand(marketCmd())
 	rootCmd.AddCommand(sectorCmd())

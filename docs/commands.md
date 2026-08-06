@@ -8,6 +8,28 @@
 
 ---
 
+## `go-quant daily` — 一键日终
+
+按顺序执行：拉取当日日线（未发布则跳过并沿用最近交易日）、涨跌停价、资金流向、指数，构建板块快照，生成交易信号，然后自动重建历史验证证据，最后输出精简推荐摘要。
+
+| 参数 | 说明 | 默认 |
+|------|------|------|
+| `-n, --top N` | 买入推荐数量 | 3 |
+| `--watch N` | 观察机会数量 | 3 |
+| `--ai` | 追加 AI 点评（需 config.yaml 启用 `ai` 并设置 `QUANT_AI_API_KEY`） | 关 |
+| `--validate` | 信号生成后自动重建历史验证证据 | 开 |
+| `--realtime-source` | 实时行情来源：auto、eastmoney、sina | auto |
+
+示例：
+
+```bash
+./go-quant daily          # 标准日终，输出 Top 3 推荐 + 3 条观察机会
+./go-quant daily --ai     # 追加 AI 点评
+./go-quant daily -n 5 --watch 5
+```
+
+---
+
 ## `go-quant fetch` — 数据拉取
 
 | 参数 | 说明 | 示例 |

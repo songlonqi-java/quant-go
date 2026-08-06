@@ -17,13 +17,12 @@ go build -o go-quant ./cmd/go-quant/
 ./go-quant fetch --index         # 指数数据
 
 # 每日使用
-./go-quant fetch --today                 # 盘后拉今日日线
-./go-quant fetch --stk-limit --today     # 补今日涨跌停价
-./go-quant fetch --moneyflow --today     # 补今日资金流向
-./go-quant signal -n 5                   # 按短/中/长生成买卖信号，默认带新浪盘中校验
-./go-quant backtest -s macd              # 回测
-./go-quant forward validate              # 回填前向测试收益
-./go-quant forward migrate               # 迁移旧版前向测试CSV
+./go-quant daily                 # 一键日终：拉数据+信号+自动重建证据，输出精简推荐
+./go-quant daily --ai            # 追加 AI 点评
+./go-quant signal -n 5           # 完整信号：按短/中/长生成买卖信号，默认带新浪盘中校验
+./go-quant backtest -s macd      # 回测
+./go-quant forward validate      # 回填前向测试收益
+./go-quant forward migrate       # 迁移旧版前向测试CSV
 ```
 
 ## 文档索引

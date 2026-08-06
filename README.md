@@ -46,10 +46,12 @@ go build -o go-quant ./cmd/go-quant/
 # 可执行链路的共享资金组合回测（默认 backtest 仅做单标的诊断）
 ./go-quant backtest --ensemble
 
-# 5. 查看信号
-./go-quant signal -n 5 --watch 15 # 每个周期买入/卖出各最多5条，额外显示15条观察机会
-./go-quant forward validate       # 回填固定观察期及有状态退出的毛收益、成本和净收益
-./go-quant forward migrate        # 迁移旧版前向测试CSV
+# 4. 查看信号
+./go-quant daily                # 一键日终：拉数据+信号+重建证据，输出精简推荐
+./go-quant daily --ai           # 追加 AI 点评（需配置 ai 与 QUANT_AI_API_KEY）
+./go-quant signal -n 5 --watch 15 # 完整信号输出（每个周期买入/卖出各最多5条，额外显示15条观察机会）
+./go-quant forward validate     # 回填固定观察期及有状态退出的毛收益、成本和净收益
+./go-quant forward migrate      # 迁移旧版前向测试CSV
 
 # 盘中查看全市场宽度（均匀分批请求，默认约1分钟完成）
 ./go-quant market realtime --window 1m
@@ -63,6 +65,7 @@ go build -o quant-web ./cmd/quant-web/
 
 | 命令 | 说明 |
 |------|------|
+| `./go-quant daily` | 一键日终：拉数据 → 板块快照 → 信号 → 重建证据 → 精简推荐（可加 `--ai`） |
 | `./go-quant fetch` | 拉取日线/涨跌停价/资金流向/基本面/财务/指数数据 |
 | `./go-quant market realtime` | 拉取全市场盘中报价，计算涨跌家数和涨跌停扩散 |
 | `./go-quant signal` | 生成短线/中线/长线买卖信号（市场+新闻+持仓+策略） |
