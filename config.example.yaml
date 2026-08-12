@@ -44,7 +44,6 @@ signal:
     - volume_breakout
     - kdj
     - sar
-    - relative_strength
     - atr_breakout
     - trend_pullback
   top_n: 20
@@ -60,13 +59,17 @@ portfolio:
 # 正式买入候选需要有历史样本外证据。先运行
 # ./go-quant validate build
 # 生成 data/raw/validation/evidence.json。min_samples 指独立信号日期簇数，
-# 同日多只股票不会重复增加该数字。
+# 同日多只股票不会重复增加该数字。合格要求：期望收益相对等权市场代理的
+# 超额（alpha）超过 min_alpha_pct、跑赢基准的折数达到 min_positive_folds、
+# 日期簇等权权益最大回撤不超过 max_drawdown_pct。绝对正收益不是前提。
 validation:
   enabled: true
   path: "validation/evidence.json"
   min_samples: 30
   min_positive_folds: 2
   min_expected_return_pct: 0
+  min_alpha_pct: 0.5          # 超等权市场代理的期望收益门槛
+  max_drawdown_pct: -45       # 资格桶允许的最大回撤（负值）
   prior_samples: 20          # 同周期宽泛先验的最大等效样本权重
 
 ai:
