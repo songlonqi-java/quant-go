@@ -8,6 +8,7 @@ import (
 
 	"quant/internal/config"
 	"quant/internal/data"
+	"quant/internal/realtime"
 	"quant/internal/sector"
 	"quant/internal/strategy"
 
@@ -50,6 +51,15 @@ type Report struct {
 
 	BuySignals  []string
 	SellSignals []string
+
+	Realtime *realtime.Quote
+}
+
+// SetRealtime attaches a live quote pulled from the realtime provider. The
+// quote is raw (non-adjusted) market price; all comparisons in Print convert
+// adjusted references through the latest adj factor.
+func (r *Report) SetRealtime(q realtime.Quote) {
+	r.Realtime = &q
 }
 
 func Run(code, configPath string) (*Report, error) {
@@ -253,6 +263,17 @@ func (r *Report) Print() {
 			r.Latest.TradeDate, r.Latest.Close, r.Latest.Open, r.Latest.High, r.Latest.Low, r.Latest.Vol)
 	}
 	fmt.Printf("╠══════════════════════════════════════════╣\n")
+
+	if r.Realtime != nil && r.Realtime.Current > 0 {
+		fmt.Printf("║  实时: ¥%.2f  %+.2f%%  开%.2f 高%.2f 低%.2f  [%s %s]\n",
+			r.Realtime.Current, r.Realtime.ChangePct,
+			r.Realtime.Open, r.Realtime.High, r.Realtime.Low,
+			r.Realtime.Source, r.Realtime.UpdateAt)
+		if r.AdjFactor > 0 {
+			fmt.Printf("║  真实价均线: MA5:%.2f MA10:%.2f MA20:%.2f MA60:%.2f\n",
+				r.MA5/r.AdjFactor, r.MA10/r.AdjFactor, r.MA20/r.AdjFactor, r.MA60/r.AdjFactor)
+		}
+	}
 
 	fmt.Printf("║  MA5:%.2f  MA10:%.2f  MA20:%.2f\n", r.MA5, r.MA10, r.MA20)
 	fmt.Printf("║  MA60:%.2f  MA120:%.2f  MA250:%.2f\n", r.MA60, r.MA120, r.MA250)
