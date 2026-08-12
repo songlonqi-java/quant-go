@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"time"
@@ -979,6 +980,7 @@ func validationCmd() *cobra.Command {
 		outputPath    string
 		workers       int
 		allowAdjusted bool
+		profilePath     string
 	)
 	cmd := &cobra.Command{
 		Use:   "validate",
@@ -989,6 +991,17 @@ func validationCmd() *cobra.Command {
 		Short: "回放全历史信号并生成推荐资格、胜率和权重证据",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			if profilePath != "" {
+				profileFile, err := os.Create(profilePath)
+				if err != nil {
+					return err
+				}
+				defer profileFile.Close()
+				if err := pprof.StartCPUProfile(profileFile); err != nil {
+					return err
+				}
+				defer pprof.StopCPUProfile()
+			}
 			liquidityPolicy := cfg.Liquidity.Policy()
 			if err := liquidityPolicy.Validate(); err != nil {
 				return fmt.Errorf("流动性配置无效: %w", err)
@@ -1058,8 +1071,9 @@ func validationCmd() *cobra.Command {
 	buildCmd.Flags().StringVar(&startDate, "start", "", "回放起始日期 YYYYMMDD")
 	buildCmd.Flags().StringVar(&endDate, "end", "", "回放结束日期 YYYYMMDD")
 	buildCmd.Flags().StringVar(&outputPath, "output", "", "验证结果路径（默认 data.raw_dir/validation/evidence.json）")
-	buildCmd.Flags().IntVar(&workers, "workers", 0, "回放并行工作数（默认 GOMAXPROCS）")
+	buildCmd.Flags().IntVar(&workers, "workers", 32, "回放并行工作数（默认 32，可提升到 64 或更高）")
 	buildCmd.Flags().BoolVar(&allowAdjusted, "allow-adjusted-trades", false, "允许用复权价近似历史成交价（仅用于旧数据临时验证）")
+	buildCmd.Flags().StringVar(&profilePath, "cpuprofile", "", "输出 CPU profile 文件（诊断用）")
 	cmd.AddCommand(buildCmd)
 	return cmd
 }
@@ -1146,10 +1160,10 @@ func resolveBacktestStrategyNames(requested, configured []string) []string {
 }
 
 func analyzeCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "analyze <股票代码>",
 		Short: "分析单只股票",
-		Long:  `显示单只股票的价格/均线/策略信号/基本面/复权换算。示例: ./go-quant analyze 002594.SZ`,
+		Long:  `显示单只股票的价格/实时行情/均线/策略信号/基本面/复权换算。示例: ./go-quant analyze 002594.SZ`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			code := args[0]
@@ -1170,10 +1184,40 @@ func analyzeCmd() *cobra.Command {
 				r.SetAdjFactor(factors[len(factors)-1].AdjFactor)
 			}
 
+			useRealtime, _ := cmd.Flags().GetBool("realtime")
+			if useRealtime {
+				realtimeSource, _ := cmd.Flags().GetString("realtime-source")
+				if quote := fetchRealtimeQuote(code, realtimeSource); quote != nil {
+					r.SetRealtime(*quote)
+				} else {
+					fmt.Println(">>> 实时行情获取失败，仅展示日线数据")
+				}
+			}
+
 			r.Print()
 			return nil
 		},
 	}
+	cmd.Flags().Bool("realtime", true, "拉取实时行情（盘中为实时价，盘后为最新收盘快照）")
+	cmd.Flags().String("realtime-source", realtime.SourceAuto, "实时行情来源: auto / eastmoney / sina")
+	return cmd
+}
+
+func fetchRealtimeQuote(code, source string) *realtime.Quote {
+	provider, err := realtime.NewProvider(source)
+	if err != nil {
+		return nil
+	}
+	quotes, err := provider.Fetch([]string{code})
+	if err != nil || len(quotes) == 0 {
+		return nil
+	}
+	byCode := realtime.MapByCode(quotes)
+	q, ok := byCode[code]
+	if !ok || q.Current <= 0 {
+		return nil
+	}
+	return &q
 }
 
 func listCmd() *cobra.Command {

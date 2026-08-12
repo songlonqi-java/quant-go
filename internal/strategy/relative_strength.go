@@ -119,12 +119,9 @@ func (r *RelativeStrength) Signal(bars []data.DailyBar, idx int) SignalType {
 		}
 		return Hold
 	}
-	if ma60 > 0 && bars[idx].Close > ma60 && bars[idx].Close > bars[idx-1].Close && r.scoreAt(bars, idx) > 20 {
-		return Buy
-	}
-	if ma60 > 0 && bars[idx].Close < ma60 {
-		return Sell
-	}
+	// 历史日期但没有横截面预计算（例如 analyze 报表路径漏调
+	// SetHistoricalUniverse）：返回 Hold 而不是静默降级为单股动量，
+	// 保证 live 与回放的信号语义一致，不会用非横截面信号冒充排名信号。
 	return Hold
 }
 

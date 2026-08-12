@@ -223,9 +223,10 @@ func TestFeasibleReturnUsesSharedRoundTripCostModel(t *testing.T) {
 func TestAnnotateAndAllocateUseEvidenceEligibility(t *testing.T) {
 	store := &Store{Version: formatVersion, Stats: map[string]Stats{
 		"exact|short|偏多|bollinger+sar+volume_breakout": {
-			Trades: 80, Samples: 40, Wins: 24, ExpectedReturnPct: 2, VolatilityPct: 3,
+			Trades: 80, Samples: 40, Wins: 24, ExpectedReturnPct: 2, ProxyExpectedReturnPct: 1,
+			VolatilityPct: 3,
 			AverageWinPct: 4, AverageLossPct: -2, MaxDrawdownPct: -8,
-			PositiveFolds: 3, FoldCount: 3,
+			PositiveFolds: 3, PositiveAlphaFolds: 3, FoldCount: 3,
 		},
 	}}
 	results := []signal.SignalResult{{
@@ -322,8 +323,8 @@ func TestAnnotateDoesNotBypassSparseExactRegimeWithSignature(t *testing.T) {
 func TestAnnotateUsesSignatureWhenNoExactRegimeEvidenceExists(t *testing.T) {
 	store := &Store{Version: formatVersion, Stats: map[string]Stats{
 		"signature|short|bollinger+sar+volume_breakout": {
-			Trades: 100, Samples: 50, Wins: 35, ExpectedReturnPct: 2,
-			PositiveFolds: 3, FoldCount: 3,
+			Trades: 100, Samples: 50, Wins: 35, ExpectedReturnPct: 2, ProxyExpectedReturnPct: 0.5,
+			PositiveFolds: 3, PositiveAlphaFolds: 3, FoldCount: 3,
 		},
 		"horizon|short": {
 			Trades: 200, Samples: 100, Wins: 60, ExpectedReturnPct: 1,

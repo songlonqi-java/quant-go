@@ -96,22 +96,7 @@
 
 ## 运行影响
 
-默认日终和默认回测现在只使用 10 个日常策略。旧配置无需立刻手工清理，退役项会自动过滤；建议最终把 `signal.default_strategies` 更新为：
-
-```yaml
-signal:
-  default_strategies:
-    - ma_crossover
-    - macd
-    - rsi
-    - bollinger
-    - volume_breakout
-    - kdj
-    - sar
-    - relative_strength
-    - atr_breakout
-    - trend_pullback
-```
+默认日终和默认回测现在只使用 10 个日常策略。`config.yaml` 的 `signal.default_strategies` 已按本表更新为 10 个策略（含 `rsi`、`sar`、`ma_crossover`、`trend_pullback`）。
 
 完成策略列表变更后重新构建证据：
 
@@ -121,3 +106,5 @@ signal:
 ```
 
 上面的 -52.08% 是删减后的冻结研究基线，不是可部署结果。重建 `evidence.json` 只是保证证据与新代码一致，不会把负期望组合自动变成合格策略；正式推荐仍会在证据不足或不合格时失效关闭。
+
+2026-08-12 更新：正式资格门槛已从“绝对正期望收益”改为“跑赢等权市场代理基准”（`validation.min_alpha_pct`，默认 0.5%），证据回放不再套用仓位策略（覆盖全部市况与周期，样本从 6k 扩展到 26 万），并新增“轻仓试错”通道（非空头市况且无合格候选时，单票仓位≤3% 的候选进入前向测试验证）。同日又追加 `validation.max_drawdown_pct`（默认 -45%）门槛：原 alpha 合格的 19 个桶中，中线突破组合普遍胜率 32-43%、回撤 -46%~-67%，全部被拦下，正式买入现在只来自短线反转组合（bollinger+rsi、rsi+sar、bollinger+sar+volume_breakout、kdj+rsi 等，胜率 41-60%、回撤 -13~-39%）。`relative_strength` 在所有市况和组合中持续拖累 alpha（未进入任何合格桶），已从 `signal.default_strategies` 移除（代码保留为研究项）。同日修复：KDJ 一字板/停牌日不再把 K/D 状态清零（原实现制造虚假低位金叉）；`relative_strength` 历史日期无横截面预计算时返回 Hold，禁止静默降级为单股动量；组合预算按“同策略签名”设集中度上限（同日同组合视为一个赌注，合计不超过单票上限）。

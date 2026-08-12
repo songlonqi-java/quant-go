@@ -100,7 +100,12 @@ func (k *KDJ) kdSeries(bars []data.DailyBar) []kdjPoint {
 			}
 		}
 		if high == low {
-			prevK, prevD = 0, 0
+			// 一字板或停牌日无波动：标准实现以 RSV=50 平滑递推，而不是把
+			// K/D 状态清零后跳过，否则之后几天 K 被人为压低，制造虚假低位金叉。
+			curK := prevK*2/3 + 50.0/3
+			curD := prevD*2/3 + curK/3
+			series[idx] = kdjPoint{k: curK, d: curD}
+			prevK, prevD = curK, curD
 			continue
 		}
 		rsv := (bars[idx].Close - low) / (high - low) * 100

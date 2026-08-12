@@ -238,10 +238,11 @@ func ValidateWithExecution(dir string, barsMap map[string][]data.DailyBar, costM
 	updated := 0
 	dirty := false
 	marketDates := marketTradingDates(barsMap)
+	proxyIndex := execution.MarketProxyIndex(barsMap)
 	for _, row := range rows {
 		code := row["code"]
 		if code == "CASH" {
-			rowUpdated, rowDirty := validateCashRow(row, barsMap, marketDates, costModel)
+			rowUpdated, rowDirty := validateCashRow(row, proxyIndex, marketDates, costModel)
 			updated += rowUpdated
 			dirty = dirty || rowDirty
 			continue
@@ -364,7 +365,7 @@ func ValidateWithExecution(dir string, barsMap map[string][]data.DailyBar, costM
 	return updated, writeRows(path, rows)
 }
 
-func validateCashRow(row map[string]string, barsMap map[string][]data.DailyBar, marketDates []string, costModel execution.CostModel) (int, bool) {
+func validateCashRow(row map[string]string, proxyIndex map[string]execution.MarketProxyPoint, marketDates []string, costModel execution.CostModel) (int, bool) {
 	if len(marketDates) == 0 || row["target_date"] == "" {
 		return 0, false
 	}
@@ -379,7 +380,7 @@ func validateCashRow(row map[string]string, barsMap map[string][]data.DailyBar, 
 	dirty = dirty || metadataChanged
 	entryDate := marketDates[targetIdx]
 	if row["next_return_pct"] == "" || row["next_cost_pct"] == "" || row["next_net_return_pct"] == "" || forceCostRefresh {
-		if result, ok := equalWeightMarketReturn(barsMap, entryDate, entryDate, costModel); ok {
+		if result, ok := execution.MarketProxyReturn(proxyIndex, entryDate, entryDate, costModel); ok {
 			writeBreakdownValues(row, "next_return_pct", "next_cost_pct", "next_net_return_pct", result)
 			row["status"] = "cash_validated_1d"
 			appendNote(row, "空仓对照：等权市场代理当日收益")
@@ -393,7 +394,7 @@ func validateCashRow(row map[string]string, barsMap map[string][]data.DailyBar, 
 			continue
 		}
 		exitDate := marketDates[targetIdx+target.offset]
-		if result, ok := equalWeightMarketReturn(barsMap, entryDate, exitDate, costModel); ok {
+		if result, ok := execution.MarketProxyReturn(proxyIndex, entryDate, exitDate, costModel); ok {
 			writeBreakdownValues(row, target.returnField, target.costField, target.netReturnField, result)
 			row["status"] = "cash_validated_" + target.label
 			updated++
@@ -420,37 +421,7 @@ func marketTradingDates(barsMap map[string][]data.DailyBar) []string {
 	return dates
 }
 
-func equalWeightMarketReturn(barsMap map[string][]data.DailyBar, entryDate, exitDate string, costModel execution.CostModel) (execution.ReturnBreakdown, bool) {
-	var total execution.ReturnBreakdown
-	count := 0
-	for _, bars := range barsMap {
-		entryIdx := indexByDate(bars, entryDate)
-		exitIdx := indexByDate(bars, exitDate)
-		if entryIdx < 0 || exitIdx < 0 {
-			continue
-		}
-		entry := bars[entryIdx].TradeOpen()
-		exit := bars[exitIdx].TradeClose()
-		if entry <= 0 || exit <= 0 {
-			continue
-		}
-		result, ok := execution.RoundTripReturn(entry, exit, costModel)
-		if !ok {
-			continue
-		}
-		total.GrossReturnPct += result.GrossReturnPct
-		total.CostImpactPct += result.CostImpactPct
-		total.NetReturnPct += result.NetReturnPct
-		count++
-	}
-	if count == 0 {
-		return execution.ReturnBreakdown{}, false
-	}
-	total.GrossReturnPct /= float64(count)
-	total.CostImpactPct /= float64(count)
-	total.NetReturnPct /= float64(count)
-	return total, true
-}
+
 
 func validateHorizonReturns(row map[string]string, bars []data.DailyBar, targetIdx int, costModel execution.CostModel, liquidity execution.LiquidityPolicy, orderValue, entryImpact float64, forceCostRefresh bool) (int, bool) {
 	open := parseFloat(row["next_open"])

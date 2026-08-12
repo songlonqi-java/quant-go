@@ -36,13 +36,34 @@ func ApplyPositionPolicy(results []SignalResult, marketStatus *market.MarketStat
 			continue
 		}
 		issues := qualifyingBuyIssues(results[i])
-		if suppressAllBuys || len(issues) > 0 {
+		if suppressAllBuys {
 			results[i].Suppressed = true
 			results[i].SuppressionReason = suppressionReason(decision, issues)
 			results[i].PositionPct = 0
 			addUnique(&results[i].RiskLabels, "空仓过滤")
 			if results[i].SuppressionReason != "" {
 				results[i].Reasons = append(results[i].Reasons, "仓位策略: "+results[i].SuppressionReason)
+			}
+			continue
+		}
+		if len(issues) > 0 {
+			if decision.Action == PositionActionProbe && onlyEvidenceIssue(issues) {
+				// 轻仓试错通道：历史证据未达标只降级为提示，不阻断试错买入。
+				// 前向测试仍会记录这些试错并回填收益，用真实数据决定去留。
+				addUnique(&results[i].RiskLabels, "试错:历史验证未通过")
+				results[i].Reasons = append(results[i].Reasons, "试错通道: 历史验证未通过，仅轻仓跟踪验证")
+				if results[i].PositionPct > 3 {
+					results[i].PositionPct = 3
+					addUnique(&results[i].RiskLabels, "轻仓试错")
+				}
+			} else {
+				results[i].Suppressed = true
+				results[i].SuppressionReason = suppressionReason(decision, issues)
+				results[i].PositionPct = 0
+				addUnique(&results[i].RiskLabels, "风控过滤")
+				if results[i].SuppressionReason != "" {
+					results[i].Reasons = append(results[i].Reasons, "风控过滤: "+results[i].SuppressionReason)
+				}
 			}
 			continue
 		}
@@ -54,6 +75,13 @@ func ApplyPositionPolicy(results []SignalResult, marketStatus *market.MarketStat
 	RefreshRiskPolicy(results)
 
 	return decision
+}
+
+// onlyEvidenceIssue reports whether the candidate's only blocker is the
+// historical evidence gate, which is exactly what the probe channel exists to
+// gather forward data on.
+func onlyEvidenceIssue(issues []string) bool {
+	return len(issues) == 1 && issues[0] == "历史验证不通过"
 }
 
 func EvaluatePositionPolicy(results []SignalResult, marketStatus *market.MarketStatus) PositionDecision {
@@ -86,7 +114,7 @@ func EvaluatePositionPolicy(results []SignalResult, marketStatus *market.MarketS
 	if decision.CandidateBuys == 0 {
 		decision.Reasons = append(decision.Reasons, "没有买入候选")
 	} else if decision.QualifiedBuys == 0 {
-		decision.Reasons = append(decision.Reasons, "没有通过风控的买入候选")
+		decision.Reasons = append(decision.Reasons, "没有历史验证合格的候选，进入轻仓试错")
 	} else if decision.SuppressedBuys > 0 {
 		decision.Reasons = append(decision.Reasons, fmt.Sprintf("%d个买入候选被盘中/风控过滤", decision.SuppressedBuys))
 	}
@@ -101,13 +129,13 @@ func EvaluatePositionPolicy(results []SignalResult, marketStatus *market.MarketS
 		decision.Action = PositionActionWatch
 	case decision.CandidateBuys == 0:
 		decision.Action = PositionActionCash
-	case decision.QualifiedBuys == 0 && !isBearish(sentiment) && !isNeutral(sentiment):
-		decision.Action = PositionActionWatch
-	case decision.QualifiedBuys == 0:
-		decision.Action = PositionActionCash
 	case isBearish(sentiment) && qualifiedWithMoneyflow == 0:
 		decision.Action = PositionActionCash
 	case isBearish(sentiment):
+		decision.Action = PositionActionProbe
+	// 非空头市况：即使没有任何历史验证合格的候选，也放行轻仓试错，
+	// 让前向验证用真实收益决定这些候选的去留，而不是永远空仓。
+	case decision.QualifiedBuys == 0:
 		decision.Action = PositionActionProbe
 	case isNeutral(sentiment) && decision.QualifiedBuys <= 1 && qualifiedWithMoneyflow == 0:
 		decision.Action = PositionActionCash

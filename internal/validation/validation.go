@@ -23,17 +23,27 @@ import (
 	"quant/internal/strategy"
 )
 
-const formatVersion = 5
+const formatVersion = 6
 
 type Policy struct {
 	MinSamples           int
 	MinPositiveFolds     int
 	MinExpectedReturnPct float64
-	PriorSamples         float64
+	// MinAlphaPct is the required excess net return over the equal-weight
+	// market proxy. Absolute profitability is no longer the qualification bar:
+	// a strategy that beats the market in every fold qualifies even when the
+	// market itself is negative.
+	MinAlphaPct float64
+	// MaxDrawdownPct is the worst cluster-equity drawdown a qualifying bucket
+	// may have (e.g. -45 means the bucket must never lose more than 45%). It
+	// stops thin-alpha, high-drawdown trend buckets from passing the alpha
+	// gate alone.
+	MaxDrawdownPct float64
+	PriorSamples   float64
 }
 
 func DefaultPolicy() Policy {
-	return Policy{MinSamples: 30, MinPositiveFolds: 2, PriorSamples: 20}
+	return Policy{MinSamples: 30, MinPositiveFolds: 2, MinAlphaPct: 0.5, MaxDrawdownPct: -45, PriorSamples: 20}
 }
 
 type BuildOptions struct {
@@ -67,12 +77,17 @@ type Stats struct {
 	Wins              int     `json:"wins"`
 	WinRatePct        float64 `json:"win_rate_pct"`
 	ExpectedReturnPct float64 `json:"expected_return_pct"`
-	AverageWinPct     float64 `json:"average_win_pct"`
-	AverageLossPct    float64 `json:"average_loss_pct"`
-	VolatilityPct     float64 `json:"volatility_pct"`
-	MaxDrawdownPct    float64 `json:"max_drawdown_pct"`
-	PositiveFolds     int     `json:"positive_folds"`
-	FoldCount         int     `json:"fold_count"`
+	// ProxyExpectedReturnPct is the equal-weight market proxy net return over
+	// the same holding windows; alpha is ExpectedReturnPct minus this value.
+	ProxyExpectedReturnPct float64 `json:"proxy_expected_return_pct"`
+	AverageWinPct          float64 `json:"average_win_pct"`
+	AverageLossPct         float64 `json:"average_loss_pct"`
+	VolatilityPct          float64 `json:"volatility_pct"`
+	MaxDrawdownPct         float64 `json:"max_drawdown_pct"`
+	PositiveFolds          int     `json:"positive_folds"`
+	// PositiveAlphaFolds counts folds where the strategy beat the market proxy.
+	PositiveAlphaFolds int `json:"positive_alpha_folds"`
+	FoldCount          int `json:"fold_count"`
 }
 
 type HorizonSamplingRule struct {
@@ -132,10 +147,11 @@ type replaySignal struct {
 }
 
 type observation struct {
-	date string
-	code string
-	ret  float64
-	fold int
+	date  string
+	code  string
+	ret   float64
+	proxy float64
+	fold  int
 }
 
 type accumulator struct {
@@ -216,6 +232,16 @@ func Build(opts BuildOptions) (*Store, error) {
 	}
 
 	sortBarsByDate(opts.CodeMap)
+	// The equal-weight market proxy is precomputed once as a per-date index so
+	// per-trade lookups are two map accesses instead of a full dataset scan.
+	proxyIndex := execution.MarketProxyIndex(opts.CodeMap)
+	proxyCosts := execution.CostModel{Commission: opts.Commission, Slippage: opts.Slippage}
+	proxyReturn := func(entryDate, exitDate string) float64 {
+		if pb, ok := execution.MarketProxyReturn(proxyIndex, entryDate, exitDate, proxyCosts); ok {
+			return pb.NetReturnPct
+		}
+		return 0
+	}
 	prepareStrategies(opts.Strategies, opts.CodeMap, opts.Fundamentals)
 	statuses := market.BuildHistoricalStatus(opts.CodeMap)
 	dates := replayDates(opts.CodeMap, opts.StartDate, opts.EndDate)
@@ -275,93 +301,111 @@ func Build(opts BuildOptions) (*Store, error) {
 
 	evaluator := signal.NewHistoricalEvaluator(opts.Strategies)
 	independentUntil := make(map[string]string)
-	for currentDateIndex, date := range dates {
-		fold, outOfSample := foldByDate[date]
-		if !outOfSample {
-			continue
+	outOfSampleDates := make([]string, 0, len(dates))
+	for _, date := range dates {
+		if _, ok := foldByDate[date]; ok {
+			outOfSampleDates = append(outOfSampleDates, date)
 		}
-		rows := replayDate(opts.CodeMap, opts.StockNames, evaluator, statuses[date], opts.Moneyflows, opts.Workers, date)
-		results := make([]signal.SignalResult, len(rows))
-		for i := range rows {
-			results[i] = rows[i].result
+	}
+	stageStart := time.Now()
+	for batchStart := 0; batchStart < len(outOfSampleDates); batchStart += replayBatchDays {
+		batchEnd := batchStart + replayBatchDays
+		if batchEnd > len(outOfSampleDates) {
+			batchEnd = len(outOfSampleDates)
 		}
-		signal.ApplyLiquidityPolicy(results, opts.CodeMap, signal.LiquidityContext{
-			Policy: opts.Liquidity, StockInfos: opts.StockInfos, Fundamentals: opts.Fundamentals,
-			ReferenceEquity: opts.ReferenceEquity, ApplyCurrentST: false,
-		})
-		signal.ApplyPositionPolicy(results, statuses[date])
-		for i := range results {
-			store.ScannedSignals++
-			if results[i].Recommendation() != "买入" {
-				if results[i].LiquidityApplied && !results[i].LiquidityEligible {
-					store.LiquidityFiltered++
-				}
-				continue
+		batch := outOfSampleDates[batchStart:batchEnd]
+		byDateRows := replayDateBatch(opts.CodeMap, opts.StockNames, evaluator, statuses, opts.Moneyflows, opts.Workers, batch)
+		for _, date := range batch {
+			rows := byDateRows[date]
+			currentDateIndex := dateIndex[date]
+			fold := foldByDate[date]
+			results := make([]signal.SignalResult, len(rows))
+			for i := range rows {
+				results[i] = rows[i].result
 			}
-			horizon := results[i].Horizon
-			if currentDateIndex < foldStartIndex[fold]+embargoTradingDays(horizon) {
-				store.EmbargoedSignals++
-				continue
-			}
-			bars := opts.CodeMap[rows[i].code]
-			outcome := execution.SimulateManagedExit(bars, marketDates, date, horizon, execution.SimulationOptions{
-				Costs: execution.CostModel{Commission: opts.Commission, Slippage: opts.Slippage}, MaxEntryGapPct: 3,
-				Liquidity: opts.Liquidity, OrderValueCNY: opts.ReferenceEquity * results[i].PositionPct / 100,
+			signal.ApplyLiquidityPolicy(results, opts.CodeMap, signal.LiquidityContext{
+				Policy: opts.Liquidity, StockInfos: opts.StockInfos, Fundamentals: opts.Fundamentals,
+				ReferenceEquity: opts.ReferenceEquity, ApplyCurrentST: false,
 			})
-			if !outcome.EntryFeasible {
-				store.SkippedTrades++
-				continue
-			}
-			if !outcome.Completed {
-				store.PurgedSignals++
-				if outcome.Triggered {
-					store.UnresolvedExits++
+			// Note: the position policy is intentionally NOT applied here. The
+			// evidence must cover every market regime, otherwise cash/watching days
+			// silently censor the sample and the remaining stats no longer match
+			// the live candidate pool, which always contains raw buy signals.
+			for i := range results {
+				store.ScannedSignals++
+				if results[i].Recommendation() != "买入" {
+					if results[i].LiquidityApplied && !results[i].LiquidityEligible {
+						store.LiquidityFiltered++
+					}
+					continue
 				}
-				continue
-			}
-			exitDate := outcome.ExitDate
-			if exitDate > foldEndDate[fold] || (opts.EndDate != "" && exitDate > opts.EndDate) {
-				store.PurgedSignals++
-				continue
-			}
-			independenceKey := rows[i].code + "|" + string(horizon)
-			if until := independentUntil[independenceKey]; until != "" && date < until {
-				store.OverlappingSignals++
-				continue
-			}
-			independentUntil[independenceKey] = exitDate
-			store.FeasibleTrades++
-			if outcome.EntryImpactRate > 0 || outcome.ExitImpactRate > 0 {
-				store.ImpactedTrades++
-			}
-			store.AverageEntryImpactPct += outcome.EntryImpactRate * 100
-			store.AverageExitImpactPct += outcome.ExitImpactRate * 100
-			store.MaxImpactPct = math.Max(store.MaxImpactPct, math.Max(outcome.EntryImpactRate, outcome.ExitImpactRate)*100)
-			store.MaxParticipationPct = math.Max(store.MaxParticipationPct, math.Max(outcome.EntryParticipationPct, outcome.ExitParticipationPct))
-			store.ExitReasonCounts[string(outcome.Reason)]++
-			if outcome.DelayDays > 0 {
-				store.DelayedExitTrades++
-				store.ExitDelayDays += outcome.DelayDays
-				if outcome.DelayDays > store.MaxExitDelayDays {
-					store.MaxExitDelayDays = outcome.DelayDays
+				horizon := results[i].Horizon
+				if currentDateIndex < foldStartIndex[fold]+embargoTradingDays(horizon) {
+					store.EmbargoedSignals++
+					continue
 				}
-			}
-			if outcome.TailLoss {
-				store.TailLossTrades++
-			}
-			ret := outcome.Returns.NetReturnPct
-			if store.FeasibleTrades == 1 || ret < store.WorstNetReturnPct {
-				store.WorstNetReturnPct = ret
-			}
-			for _, key := range statKeys(horizon, statuses[date], rows[i].signature) {
-				acc := accumulators[key]
-				if acc == nil {
-					acc = &accumulator{}
-					accumulators[key] = acc
+				bars := opts.CodeMap[rows[i].code]
+				outcome := execution.SimulateManagedExit(bars, marketDates, date, horizon, execution.SimulationOptions{
+					Costs: execution.CostModel{Commission: opts.Commission, Slippage: opts.Slippage}, MaxEntryGapPct: 3,
+					Liquidity: opts.Liquidity, OrderValueCNY: opts.ReferenceEquity * results[i].PositionPct / 100,
+				})
+				if !outcome.EntryFeasible {
+					store.SkippedTrades++
+					continue
 				}
-				acc.points = append(acc.points, observation{date: date, code: results[i].Code, ret: ret, fold: fold})
+				if !outcome.Completed {
+					store.PurgedSignals++
+					if outcome.Triggered {
+						store.UnresolvedExits++
+					}
+					continue
+				}
+				exitDate := outcome.ExitDate
+				if exitDate > foldEndDate[fold] || (opts.EndDate != "" && exitDate > opts.EndDate) {
+					store.PurgedSignals++
+					continue
+				}
+				independenceKey := rows[i].code + "|" + string(horizon)
+				if until := independentUntil[independenceKey]; until != "" && date < until {
+					store.OverlappingSignals++
+					continue
+				}
+				independentUntil[independenceKey] = exitDate
+				store.FeasibleTrades++
+				if outcome.EntryImpactRate > 0 || outcome.ExitImpactRate > 0 {
+					store.ImpactedTrades++
+				}
+				store.AverageEntryImpactPct += outcome.EntryImpactRate * 100
+				store.AverageExitImpactPct += outcome.ExitImpactRate * 100
+				store.MaxImpactPct = math.Max(store.MaxImpactPct, math.Max(outcome.EntryImpactRate, outcome.ExitImpactRate)*100)
+				store.MaxParticipationPct = math.Max(store.MaxParticipationPct, math.Max(outcome.EntryParticipationPct, outcome.ExitParticipationPct))
+				store.ExitReasonCounts[string(outcome.Reason)]++
+				if outcome.DelayDays > 0 {
+					store.DelayedExitTrades++
+					store.ExitDelayDays += outcome.DelayDays
+					if outcome.DelayDays > store.MaxExitDelayDays {
+						store.MaxExitDelayDays = outcome.DelayDays
+					}
+				}
+				if outcome.TailLoss {
+					store.TailLossTrades++
+				}
+				ret := outcome.Returns.NetReturnPct
+				if store.FeasibleTrades == 1 || ret < store.WorstNetReturnPct {
+					store.WorstNetReturnPct = ret
+				}
+				proxyRet := proxyReturn(outcome.EntryDate, outcome.ExitDate)
+				for _, key := range statKeys(horizon, statuses[date], rows[i].signature) {
+					acc := accumulators[key]
+					if acc == nil {
+						acc = &accumulator{}
+						accumulators[key] = acc
+					}
+					acc.points = append(acc.points, observation{date: date, code: results[i].Code, ret: ret, proxy: proxyRet, fold: fold})
+				}
 			}
 		}
+		fmt.Printf("  回放进度: %d/%d 日, 已用 %s\n", batchEnd, len(outOfSampleDates), time.Since(stageStart).Round(time.Second))
 	}
 	for key, acc := range accumulators {
 		store.Stats[key] = summarize(acc.points, len(folds))
@@ -473,16 +517,21 @@ func buildFolds(dates []string, count int) []Fold {
 	return folds
 }
 
-// replayDate keeps the live-sized candidate set for one trading day only. The
-// previous all-history materialization retained millions of detailed strategy
-// maps and made a full replay memory-bound on otherwise capable machines.
-func replayDate(codeMap map[string][]data.DailyBar, names map[string]string, evaluator *signal.HistoricalEvaluator, marketStatus *market.MarketStatus, moneyflows *data.MoneyflowStore, workers int, date string) []replaySignal {
+// replayDateBatch replays a batch of trading days in one shared worker pool.
+// Replaying one day at a time paid the channel/waitgroup setup cost for every
+// date, which made a 16-worker build hover around two cores of utilisation.
+// A batch keeps the workers hot and returns rows grouped by trade date.
+func replayDateBatch(codeMap map[string][]data.DailyBar, names map[string]string, evaluator *signal.HistoricalEvaluator, statuses map[string]*market.MarketStatus, moneyflows *data.MoneyflowStore, workers int, batch []string) map[string][]replaySignal {
 	type job struct {
 		code string
 		bars []data.DailyBar
+		idx  []int
 	}
 	type result struct {
-		rows []replaySignal
+		rows map[string][]replaySignal
+	}
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
 	}
 	jobs := make(chan job)
 	results := make(chan result, workers)
@@ -491,25 +540,27 @@ func replayDate(codeMap map[string][]data.DailyBar, names map[string]string, eva
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			local := make([]replaySignal, 0)
+			local := make(map[string][]replaySignal)
 			for item := range jobs {
-				idx := sort.Search(len(item.bars), func(i int) bool { return item.bars[i].TradeDate >= date })
-				if idx >= len(item.bars) || item.bars[idx].TradeDate != date {
-					continue
-				}
 				name := item.code
 				if names[item.code] != "" {
 					name = names[item.code]
 				}
-				for _, candidate := range evaluator.Evaluate(item.bars, idx, name, marketStatus, moneyflows) {
-					if candidate.Recommendation() != "买入" {
+				for _, idx := range item.idx {
+					if idx < 0 || idx >= len(item.bars) {
 						continue
 					}
-					signature := buySignature(candidate)
-					candidate.Strategies = nil
-					candidate.GroupScores = nil
-					candidate.Reasons = nil
-					local = append(local, replaySignal{result: candidate, code: item.code, idx: idx, signature: signature})
+					date := item.bars[idx].TradeDate
+					for _, candidate := range evaluator.Evaluate(item.bars, idx, name, statuses[date], moneyflows) {
+						if candidate.Recommendation() != "买入" {
+							continue
+						}
+						signature := buySignature(candidate)
+						candidate.Strategies = nil
+						candidate.GroupScores = nil
+						candidate.Reasons = nil
+						local[date] = append(local[date], replaySignal{result: candidate, code: item.code, idx: idx, signature: signature})
+					}
 				}
 			}
 			results <- result{rows: local}
@@ -517,19 +568,32 @@ func replayDate(codeMap map[string][]data.DailyBar, names map[string]string, eva
 	}
 	go func() {
 		for code, bars := range codeMap {
-			jobs <- job{code: code, bars: bars}
+			idx := make([]int, 0, len(batch))
+			for _, date := range batch {
+				pos := sort.Search(len(bars), func(i int) bool { return bars[i].TradeDate >= date })
+				if pos < len(bars) && bars[pos].TradeDate == date {
+					idx = append(idx, pos)
+				}
+			}
+			if len(idx) > 0 {
+				jobs <- job{code: code, bars: bars, idx: idx}
+			}
 		}
 		close(jobs)
 		wg.Wait()
 		close(results)
 	}()
 
-	merged := make([]replaySignal, 0)
+	merged := make(map[string][]replaySignal)
 	for item := range results {
-		merged = append(merged, item.rows...)
+		for date, rows := range item.rows {
+			merged[date] = append(merged[date], rows...)
+		}
 	}
 	return merged
 }
+
+const replayBatchDays = 40
 
 func feasibleReturn(bars []data.DailyBar, signalIdx int, horizon strategy.Horizon, commission, slippage float64, endDate string) (float64, bool) {
 	if signalIdx < 0 || signalIdx >= len(bars) {
@@ -589,10 +653,13 @@ func summarize(points []observation, possibleFolds int) Stats {
 	clustered := clusterBySignalDate(points)
 	stats := Stats{Trades: len(points), Samples: len(clustered)}
 	var sum, wins, losses float64
+	var proxySum float64
 	foldSums := make(map[int]float64)
 	foldCounts := make(map[int]int)
+	alphaFoldSums := make(map[int]float64)
 	for _, point := range clustered {
 		sum += point.ret
+		proxySum += point.proxy
 		foldSums[point.fold] += point.ret
 		foldCounts[point.fold]++
 		if point.ret > 0 {
@@ -601,9 +668,11 @@ func summarize(points []observation, possibleFolds int) Stats {
 		} else if point.ret < 0 {
 			losses += point.ret
 		}
+		alphaFoldSums[point.fold] += point.ret - point.proxy
 	}
 	stats.WinRatePct = float64(stats.Wins) / float64(stats.Samples) * 100
 	stats.ExpectedReturnPct = sum / float64(stats.Samples)
+	stats.ProxyExpectedReturnPct = proxySum / float64(stats.Samples)
 	if stats.Wins > 0 {
 		stats.AverageWinPct = wins / float64(stats.Wins)
 	}
@@ -640,6 +709,9 @@ func summarize(points []observation, possibleFolds int) Stats {
 		if foldSums[fold]/float64(count) > 0 {
 			stats.PositiveFolds++
 		}
+		if alphaFoldSums[fold] > 0 {
+			stats.PositiveAlphaFolds++
+		}
 	}
 	if stats.FoldCount > possibleFolds {
 		stats.FoldCount = possibleFolds
@@ -656,13 +728,15 @@ func clusterBySignalDate(points []observation) []observation {
 		date := points[i].date
 		fold := points[i].fold
 		sum := 0.0
+		proxySum := 0.0
 		count := 0
 		for i < len(points) && points[i].date == date {
 			sum += points[i].ret
+			proxySum += points[i].proxy
 			count++
 			i++
 		}
-		clustered = append(clustered, observation{date: date, ret: sum / float64(count), fold: fold})
+		clustered = append(clustered, observation{date: date, ret: sum / float64(count), proxy: proxySum / float64(count), fold: fold})
 	}
 	return clustered
 }
@@ -709,23 +783,27 @@ func Annotate(results []signal.SignalResult, store *Store, policy Policy, enforc
 		evidence.PriorWeight = priorWeight
 		evidence.WinRatePct = shrinkWinRate(stats, priorWeight, match.prior, match.hasPrior)
 		evidence.ExpectedReturnPct = shrinkExpectedReturn(stats, priorWeight, match.prior, match.hasPrior)
+		evidence.ProxyExpectedReturnPct = shrinkProxyReturn(stats, priorWeight, match.prior, match.hasPrior)
+		evidence.AlphaExpectedReturnPct = evidence.ExpectedReturnPct - evidence.ProxyExpectedReturnPct
 		evidence.AverageWinPct = stats.AverageWinPct
 		evidence.AverageLossPct = stats.AverageLossPct
 		evidence.VolatilityPct = stats.VolatilityPct
 		evidence.MaxDrawdownPct = stats.MaxDrawdownPct
 		evidence.PositiveFolds = stats.PositiveFolds
+		evidence.PositiveAlphaFolds = stats.PositiveAlphaFolds
 		evidence.FoldCount = stats.FoldCount
 		evidence.Eligible = match.strategySpecific &&
 			stats.Samples >= policy.MinSamples &&
-			stats.PositiveFolds >= policy.MinPositiveFolds &&
-			stats.ExpectedReturnPct > policy.MinExpectedReturnPct &&
-			evidence.ExpectedReturnPct > policy.MinExpectedReturnPct
+			stats.PositiveAlphaFolds >= policy.MinPositiveFolds &&
+			statsAlpha(stats) > policy.MinAlphaPct &&
+			evidence.AlphaExpectedReturnPct > policy.MinAlphaPct &&
+			stats.MaxDrawdownPct > policy.MaxDrawdownPct
 		if evidence.Eligible {
-			evidence.Status = "历史验证通过"
+			evidence.Status = "历史验证通过（跑赢等权市场基准）"
 		} else if !match.strategySpecific {
 			evidence.Status = "仅有周期先验，不能用于正式资格"
 		} else {
-			evidence.Status = "历史验证不足"
+			evidence.Status = "历史验证不足（未跑赢等权市场基准）"
 		}
 		results[i].HistoricalEvidence = evidence
 	}
@@ -772,7 +850,7 @@ func Allocate(results []signal.SignalResult) []signal.SignalResult {
 		if denom < 0.1 {
 			denom = 0.1
 		}
-		score := math.Max(0, e.ExpectedReturnPct) * math.Sqrt(float64(e.Samples)) * float64(maxInt(1, e.PositiveFolds)) / denom
+		score := math.Max(0, e.AlphaExpectedReturnPct) * math.Sqrt(float64(e.Samples)) * float64(maxInt(1, e.PositiveAlphaFolds)) / denom
 		if score <= 0 {
 			continue
 		}
@@ -838,10 +916,29 @@ func normalizedPolicy(policy Policy) Policy {
 	if policy.MinPositiveFolds <= 0 {
 		policy.MinPositiveFolds = defaults.MinPositiveFolds
 	}
+	if policy.MinAlphaPct <= 0 {
+		policy.MinAlphaPct = defaults.MinAlphaPct
+	}
+	if policy.MaxDrawdownPct >= 0 {
+		policy.MaxDrawdownPct = defaults.MaxDrawdownPct
+	}
 	if policy.PriorSamples <= 0 {
 		policy.PriorSamples = defaults.PriorSamples
 	}
 	return policy
+}
+
+func statsAlpha(s Stats) float64 {
+	return s.ExpectedReturnPct - s.ProxyExpectedReturnPct
+}
+
+func shrinkProxyReturn(stats Stats, priorWeight float64, prior Stats, hasPrior bool) float64 {
+	priorProxy := 0.0
+	if hasPrior {
+		priorProxy = prior.ProxyExpectedReturnPct
+	}
+	return (stats.ProxyExpectedReturnPct*float64(stats.Samples) + priorProxy*priorWeight) /
+		(float64(stats.Samples) + priorWeight)
 }
 
 func shrinkWinRate(stats Stats, priorWeight float64, prior Stats, hasPrior bool) float64 {

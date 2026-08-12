@@ -150,7 +150,16 @@ type ValidationConfig struct {
 	MinSamples        int     `yaml:"min_samples"`
 	MinPositiveFolds  int     `yaml:"min_positive_folds"`
 	MinExpectedReturn float64 `yaml:"min_expected_return_pct"`
-	PriorSamples      float64 `yaml:"prior_samples"`
+	// MinAlphaPct is the minimum excess net return over the equal-weight
+	// market proxy before a historical signal may become a formal buy. It
+	// replaces the absolute profitability bar, so strategies that reliably
+	// beat a falling market can still qualify.
+	MinAlphaPct float64 `yaml:"min_alpha_pct"`
+	// MaxDrawdownPct is the worst allowed cluster-equity drawdown of the
+	// qualifying evidence bucket (negative, e.g. -45). Buckets with thin alpha
+	// but catastrophic drawdowns are filtered out.
+	MaxDrawdownPct float64 `yaml:"max_drawdown_pct"`
+	PriorSamples   float64 `yaml:"prior_samples"`
 }
 
 var defaultConfig = Config{
@@ -203,6 +212,8 @@ var defaultConfig = Config{
 		MinSamples:        30,
 		MinPositiveFolds:  2,
 		MinExpectedReturn: 0,
+		MinAlphaPct:       0.5,
+		MaxDrawdownPct:    -45,
 		PriorSamples:      20,
 	},
 	AI: AIConfig{

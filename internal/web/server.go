@@ -916,7 +916,7 @@ func displayHistoricalEvidence(result signal.SignalResult) string {
 	parts := []string{
 		evidence.Basis,
 		fmt.Sprintf("%d日 / %d交易", evidence.Samples, evidence.Trades),
-		fmt.Sprintf("期望%+.2f%%", evidence.ExpectedReturnPct),
+		fmt.Sprintf("期望%+.2f%%(基准%+.2f%%)", evidence.ExpectedReturnPct, evidence.ProxyExpectedReturnPct),
 	}
 	if evidence.PriorBasis != "" {
 		parts = append(parts, fmt.Sprintf("先验%s(%d日/权重%.0f)",

@@ -40,30 +40,28 @@ type SimulationOptions struct {
 
 // SimulateManagedExit applies a next-market-session entry, close-confirmed
 // stateful exits, and next-open execution. Missing quotes and limit-down opens
-// after a trigger count as delayed exit sessions.
+// after a trigger count as delayed exit sessions. The source bars and
+// marketDates must both be sorted ascending with no duplicate dates.
 func SimulateManagedExit(source []data.DailyBar, marketDates []string, signalDate string, horizon strategy.Horizon, options SimulationOptions) ManagedExitOutcome {
 	outcome := ManagedExitOutcome{}
 	if len(source) < 2 || len(marketDates) < 2 || options.Costs.Validate() != nil || options.Liquidity.Validate() != nil || signalDate == "" {
 		return outcome
 	}
-	calendar := normalizedMarketDates(marketDates)
+	calendar := normalizedMarketDatesInPlace(marketDates)
 	if len(calendar) < 2 {
 		return outcome
 	}
-	bars := append([]data.DailyBar(nil), source...)
-	sort.Slice(bars, func(i, j int) bool { return bars[i].TradeDate < bars[j].TradeDate })
-	barIndex := make(map[string]int, len(bars))
-	for i, bar := range bars {
-		barIndex[bar.TradeDate] = i
-	}
+	// Callers are required to pass bars sorted by trade date; the sort check
+	// alone cost more CPU than the historical replay it guards.
+	bars := source
 	calendarIndex := sort.SearchStrings(calendar, signalDate)
 	if calendarIndex >= len(calendar) || calendar[calendarIndex] != signalDate || calendarIndex+1 >= len(calendar) {
 		return outcome
 	}
-	signalBarIdx, signalOK := barIndex[signalDate]
+	signalBarIdx := dateIndex(bars, signalDate)
 	entryDate := calendar[calendarIndex+1]
-	entryIdx, entryOK := barIndex[entryDate]
-	if !signalOK || !entryOK || !CanBuyAtOpen(bars[signalBarIdx], bars[entryIdx], options.LimitPct) {
+	entryIdx := dateIndex(bars, entryDate)
+	if signalBarIdx < 0 || entryIdx < 0 || !CanBuyAtOpen(bars[signalBarIdx], bars[entryIdx], options.LimitPct) {
 		return outcome
 	}
 	entryPrice := bars[entryIdx].TradeOpen()
@@ -88,15 +86,15 @@ func SimulateManagedExit(source []data.DailyBar, marketDates []string, signalDat
 	lastKnownBarIdx := entryIdx
 	for marketIdx := calendarIndex + 1; marketIdx < len(calendar); marketIdx++ {
 		date := calendar[marketIdx]
-		idx, hasBar := barIndex[date]
+		idx := dateIndex(bars, date)
 		close := 0.0
 		atr := 0.0
-		if hasBar {
+		if idx >= 0 {
 			lastKnownBarIdx = idx
 			close = bars[idx].TradeClose()
 			atr = ATR(bars, idx, state.Policy.ATRPeriod)
 		}
-		trigger, triggered := state.ObserveSession(date, close, atr, hasBar && close > 0)
+		trigger, triggered := state.ObserveSession(date, close, atr, idx >= 0 && close > 0)
 		if !triggered {
 			continue
 		}
@@ -108,8 +106,8 @@ func SimulateManagedExit(source []data.DailyBar, marketDates []string, signalDat
 
 		for exitMarketIdx := marketIdx + 1; exitMarketIdx < len(calendar); exitMarketIdx++ {
 			exitDate := calendar[exitMarketIdx]
-			exitIdx, hasExitBar := barIndex[exitDate]
-			if !hasExitBar || exitIdx == 0 || !CanSellAtOpen(bars[exitIdx-1], bars[exitIdx], options.LimitPct) {
+			exitIdx := dateIndex(bars, exitDate)
+			if exitIdx < 0 || exitIdx == 0 || !CanSellAtOpen(bars[exitIdx-1], bars[exitIdx], options.LimitPct) {
 				outcome.DelayDays++
 				continue
 			}
@@ -141,7 +139,21 @@ func SimulateManagedExit(source []data.DailyBar, marketDates []string, signalDat
 	return outcome
 }
 
-func normalizedMarketDates(source []string) []string {
+// normalizedMarketDatesInPlace returns source when it is already sorted and
+// duplicate-free; otherwise it falls back to the allocating normalization.
+// The calendar is built once per caller and passed into every simulation, so
+// the in-place fast path avoids hundreds of thousands of slice copies.
+func normalizedMarketDatesInPlace(source []string) []string {
+	ok := true
+	for i := 1; i < len(source); i++ {
+		if source[i] == "" || source[i] <= source[i-1] {
+			ok = false
+			break
+		}
+	}
+	if ok {
+		return source
+	}
 	dates := append([]string(nil), source...)
 	sort.Strings(dates)
 	unique := dates[:0]
@@ -152,4 +164,17 @@ func normalizedMarketDates(source []string) []string {
 		unique = append(unique, date)
 	}
 	return unique
+}
+
+// dateIndex returns the index of the bar for date via binary search on the
+// sorted bars slice, or -1 when absent.
+func dateIndex(bars []data.DailyBar, date string) int {
+	if date == "" {
+		return -1
+	}
+	idx := sort.Search(len(bars), func(i int) bool { return bars[i].TradeDate >= date })
+	if idx < len(bars) && bars[idx].TradeDate == date {
+		return idx
+	}
+	return -1
 }

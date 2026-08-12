@@ -27,14 +27,20 @@ type HistoricalEvidence struct {
 	Wins               int
 	WinRatePct         float64
 	ExpectedReturnPct  float64
-	AverageWinPct      float64
-	AverageLossPct     float64
-	VolatilityPct      float64
-	MaxDrawdownPct     float64
-	PositiveFolds      int
-	FoldCount          int
-	SuggestedWeightPct float64
-	Status             string
+	// ProxyExpectedReturnPct is the equal-weight market proxy return over the
+	// same holding windows; AlphaExpectedReturnPct is the excess over it and is
+	// what formal qualification is measured against.
+	ProxyExpectedReturnPct float64
+	AlphaExpectedReturnPct float64
+	AverageWinPct          float64
+	AverageLossPct         float64
+	VolatilityPct          float64
+	MaxDrawdownPct         float64
+	PositiveFolds          int
+	PositiveAlphaFolds     int
+	FoldCount              int
+	SuggestedWeightPct     float64
+	Status                 string
 }
 
 // PrintHistoricalEvidence prints the evidence used to qualify and size the
@@ -54,15 +60,15 @@ func PrintHistoricalEvidence(results, watchlist []SignalResult) {
 	}
 	fmt.Println("\n========== 历史样本外证据 ==========")
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "周期\t代码\t资格依据\t收缩先验\t日期样本/交易\t胜率\t期望收益\t最大回撤\t正收益折\t权重\t状态")
+	fmt.Fprintln(w, "周期\t代码\t资格依据\t收缩先验\t日期样本/交易\t胜率\t期望收益(超基准)\t最大回撤\t正收益/超基准折\t权重\t状态")
 	for _, r := range rows {
 		e := r.HistoricalEvidence
 		if e == nil {
 			continue
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d/%d\t%.1f%%\t%+.2f%%\t%.2f%%\t%d/%d\t%.1f%%\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d/%d\t%.1f%%\t%+.2f%%(%+.2f%%)\t%.2f%%\t%d/%d\t%.1f%%\t%s\n",
 			strategy.HorizonLabel(r.Horizon), r.Code, formatEvidenceBasisValue(*e), formatEvidencePrior(*e), e.Samples, e.Trades, e.WinRatePct,
-			e.ExpectedReturnPct, e.MaxDrawdownPct, e.PositiveFolds, e.FoldCount,
+			e.ExpectedReturnPct, e.AlphaExpectedReturnPct, e.MaxDrawdownPct, e.PositiveAlphaFolds, e.FoldCount,
 			e.SuggestedWeightPct, e.Status)
 	}
 	w.Flush()

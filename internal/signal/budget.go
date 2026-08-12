@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
+
+	"quant/internal/strategy"
 )
 
 // PortfolioBudget is expressed in percentage points of total account equity.
@@ -13,9 +16,13 @@ type PortfolioBudget struct {
 	MaxSinglePct      float64
 	MaxSectorPct      float64
 	MaxBuysPerHorizon int
-	ExistingTotalPct  float64
-	ExistingCodePct   map[string]float64
-	ExistingSectorPct map[string]float64
+	// MaxSameSignaturePct caps the combined allocation of candidates that
+	// fired the same strategy combo on the same day. They are one bet, not
+	// several, so stacking three of them should not triple the exposure.
+	MaxSameSignaturePct float64
+	ExistingTotalPct    float64
+	ExistingCodePct     map[string]float64
+	ExistingSectorPct   map[string]float64
 }
 
 type PortfolioAllocation struct {
@@ -52,6 +59,7 @@ func ApplyPortfolioBudget(results []SignalResult, budget PortfolioBudget) Portfo
 	}
 	codePct := cloneExposure(budget.ExistingCodePct)
 	sectorPct := cloneExposure(budget.ExistingSectorPct)
+	signaturePct := make(map[string]float64)
 	totalPct := math.Max(0, budget.ExistingTotalPct)
 
 	indices := make([]int, 0, len(results))
@@ -94,6 +102,9 @@ func ApplyPortfolioBudget(results []SignalResult, budget PortfolioBudget) Portfo
 		if r.SectorName != "" {
 			allocated = math.Min(allocated, math.Max(0, budget.MaxSectorPct-sectorPct[r.SectorName]))
 		}
+		if signature := buySignatureKey(*r); budget.MaxSameSignaturePct > 0 && signature != "" {
+			allocated = math.Min(allocated, math.Max(0, budget.MaxSameSignaturePct-signaturePct[signature]))
+		}
 
 		if allocated <= 1e-9 {
 			r.PositionPct = 0
@@ -114,12 +125,32 @@ func ApplyPortfolioBudget(results []SignalResult, budget PortfolioBudget) Portfo
 		if r.SectorName != "" {
 			sectorPct[r.SectorName] += allocated
 		}
+		if signature := buySignatureKey(*r); budget.MaxSameSignaturePct > 0 && signature != "" {
+			signaturePct[signature] += allocated
+		}
 		selectedByHorizon[horizon]++
 		allocation.AllocatedBuys++
 		allocation.AllocatedPct += allocated
 	}
 	RefreshRiskPolicy(results)
 	return allocation
+}
+
+// buySignatureKey joins the buy-side strategy names of a candidate into a
+// stable key. Candidates sharing the key are the same strategy bet on the same
+// day, so their allocations must share one concentration budget.
+func buySignatureKey(r SignalResult) string {
+	names := make([]string, 0, len(r.Strategies))
+	for name, detail := range r.Strategies {
+		if detail.Signal == strategy.Buy {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return strings.Join(names, "+")
 }
 
 // ReconcilePositionDecision makes the headline position decision describe the

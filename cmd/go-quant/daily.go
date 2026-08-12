@@ -132,6 +132,7 @@ func buildEvidenceFile(ctx context.Context, cfg *config.Config) error {
 		Slippage:        cfg.Backtest.Slippage,
 		Liquidity:       liquidityPolicy,
 		ReferenceEquity: cfg.Portfolio.Normalized(cfg.Backtest.InitialCapital).ReferenceEquity,
+		Workers:         32,
 	})
 	if err != nil {
 		return err

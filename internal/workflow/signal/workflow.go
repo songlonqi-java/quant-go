@@ -173,6 +173,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 					MinSamples:           cfg.Validation.MinSamples,
 					MinPositiveFolds:     cfg.Validation.MinPositiveFolds,
 					MinExpectedReturnPct: cfg.Validation.MinExpectedReturn,
+					MinAlphaPct:          cfg.Validation.MinAlphaPct,
+					MaxDrawdownPct:       cfg.Validation.MaxDrawdownPct,
 					PriorSamples:         cfg.Validation.PriorSamples,
 				}
 				candidatePool = validation.Annotate(candidatePool, store, policy, true)
@@ -225,11 +227,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 func buildPortfolioBudget(cfg config.PortfolioConfig, summary *portfolio.Summary, memberships sector.MembershipStore, date string, decision signals.PositionDecision) signals.PortfolioBudget {
 	budget := signals.PortfolioBudget{
-		MaxTotalPct:       signals.DeployablePositionCap(decision, cfg.MaxTotalPositionPct),
-		MaxSinglePct:      cfg.MaxSinglePositionPct,
-		MaxSectorPct:      cfg.MaxSectorPositionPct,
-		ExistingCodePct:   make(map[string]float64),
-		ExistingSectorPct: make(map[string]float64),
+		MaxTotalPct:         signals.DeployablePositionCap(decision, cfg.MaxTotalPositionPct),
+		MaxSinglePct:        cfg.MaxSinglePositionPct,
+		MaxSectorPct:        cfg.MaxSectorPositionPct,
+		MaxSameSignaturePct: cfg.MaxSinglePositionPct,
+		ExistingCodePct:     make(map[string]float64),
+		ExistingSectorPct:   make(map[string]float64),
 	}
 	if summary == nil || cfg.ReferenceEquity <= 0 {
 		return budget

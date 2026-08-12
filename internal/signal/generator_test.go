@@ -248,14 +248,31 @@ func TestApplyPositionPolicyAllowsBearishProbeWithMoneyflowConfirmation(t *testi
 	}
 }
 
-func TestApplyPositionPolicyRejectsCandidateWithoutRequiredHistoricalEvidence(t *testing.T) {
+func TestApplyPositionPolicyRoutesEvidenceFailedCandidateToProbeInNonBearishMarket(t *testing.T) {
 	results := []SignalResult{{
 		Horizon: strategy.HorizonShort, BuyCount: 3, TotalScore: 2, Confidence: 80, PositionPct: 5,
 		HistoricalEvidence: &HistoricalEvidence{Available: true, Enforced: true, Eligible: false, Status: "历史验证不足"},
 	}}
 	decision := ApplyPositionPolicy(results, &market.MarketStatus{Sentiment: "中性震荡"})
-	if decision.QualifiedBuys != 0 || decision.Action != PositionActionCash {
-		t.Fatalf("decision = %#v, want no qualified buy and cash", decision)
+	if decision.QualifiedBuys != 0 || decision.Action != PositionActionProbe {
+		t.Fatalf("decision = %#v, want no qualified buy and probe", decision)
+	}
+	if results[0].Suppressed || results[0].PositionPct != 3 {
+		t.Fatalf("result = %#v, want probe candidate capped at 3%%", results[0])
+	}
+	if !containsString(results[0].RiskLabels, "试错:历史验证未通过") {
+		t.Fatalf("RiskLabels = %v, want probe label", results[0].RiskLabels)
+	}
+}
+
+func TestApplyPositionPolicyKeepsEvidenceFailedCandidateOutOfCashMode(t *testing.T) {
+	results := []SignalResult{{
+		Horizon: strategy.HorizonShort, BuyCount: 3, TotalScore: 2, Confidence: 80, PositionPct: 5,
+		HistoricalEvidence: &HistoricalEvidence{Available: true, Enforced: true, Eligible: false, Status: "历史验证不足"},
+	}}
+	decision := ApplyPositionPolicy(results, &market.MarketStatus{Sentiment: "强烈看空"})
+	if decision.Action != PositionActionCash {
+		t.Fatalf("decision = %#v, want cash in strong bear market", decision)
 	}
 	if !results[0].Suppressed || results[0].PositionPct != 0 {
 		t.Fatalf("result = %#v, want suppressed candidate", results[0])
