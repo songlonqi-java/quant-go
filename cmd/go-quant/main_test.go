@@ -14,14 +14,14 @@ func TestResolveBacktestStrategyNamesMatchesDailyDefaults(t *testing.T) {
 		"atr_breakout", "trend_pullback", "quality_value", "earnings_growth",
 	}
 	got := resolveBacktestStrategyNames(nil, configured)
-	if len(got) != 10 {
-		t.Fatalf("default backtest strategies = %d, want 10: %v", len(got), got)
+	if len(got) != 9 {
+		t.Fatalf("default backtest strategies = %d, want 9: %v", len(got), got)
 	}
 	excluded := map[string]bool{
 		"value_ma60": true, "etf_rotation": true, "dividend_deviation": true, "bull_flag": true,
 		"williams_r": true, "donchian": true, "mfi": true, "roc": true, "ma_sticky": true,
 		"limit_up": true, "bottom_reversal": true, "market_neutral_momentum": true,
-		"quality_value": true, "earnings_growth": true,
+		"quality_value": true, "earnings_growth": true, "relative_strength": true,
 	}
 	for _, name := range got {
 		if excluded[name] {

@@ -46,7 +46,7 @@ var stopWords = map[string]bool{
 }
 
 func Analyze(ctx context.Context, client *data.Client, rawDir string, topN int) (*NewsSummary, error) {
-	records, migrated, err := loadNewsArchive(rawDir)
+	records, migrated, err := LoadArchive(rawDir)
 	if err != nil {
 		return nil, fmt.Errorf("加载新闻事实库: %w", err)
 	}

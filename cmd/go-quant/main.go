@@ -54,6 +54,7 @@ func main() {
 	rootCmd.AddCommand(valueCmd())
 	rootCmd.AddCommand(analyzeCmd())
 	rootCmd.AddCommand(listCmd())
+	rootCmd.AddCommand(newsCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -980,7 +981,7 @@ func validationCmd() *cobra.Command {
 		outputPath    string
 		workers       int
 		allowAdjusted bool
-		profilePath     string
+		profilePath   string
 	)
 	cmd := &cobra.Command{
 		Use:   "validate",

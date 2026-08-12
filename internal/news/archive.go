@@ -58,7 +58,7 @@ type legacyNewsItem struct {
 	Source   string `parquet:"source"`
 }
 
-func loadNewsArchive(rawDir string) ([]NewsRecord, bool, error) {
+func LoadArchive(rawDir string) ([]NewsRecord, bool, error) {
 	archivePath := filepath.Join(rawDir, newsArchiveRelativePath)
 	records, err := readNewsRecords(archivePath)
 	if err == nil {

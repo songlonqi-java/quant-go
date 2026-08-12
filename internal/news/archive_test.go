@@ -79,7 +79,7 @@ func TestLoadNewsArchiveMigratesLegacyLatestFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	records, migrated, err := loadNewsArchive(rawDir)
+	records, migrated, err := LoadArchive(rawDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestLoadNewsArchiveMigratesLegacyLatestFile(t *testing.T) {
 	if err := saveNewsArchive(rawDir, records); err != nil {
 		t.Fatal(err)
 	}
-	reloaded, migratedAgain, err := loadNewsArchive(rawDir)
+	reloaded, migratedAgain, err := LoadArchive(rawDir)
 	if err != nil {
 		t.Fatal(err)
 	}

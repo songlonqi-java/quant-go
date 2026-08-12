@@ -201,7 +201,7 @@ var defaultConfig = Config{
 		DefaultStrategies: []string{
 			"ma_crossover", "macd", "rsi", "bollinger",
 			"volume_breakout", "kdj", "sar",
-			"relative_strength", "atr_breakout", "trend_pullback",
+			"atr_breakout", "trend_pullback",
 		},
 		TopN: 20,
 	},
