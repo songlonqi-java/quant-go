@@ -421,8 +421,6 @@ func marketTradingDates(barsMap map[string][]data.DailyBar) []string {
 	return dates
 }
 
-
-
 func validateHorizonReturns(row map[string]string, bars []data.DailyBar, targetIdx int, costModel execution.CostModel, liquidity execution.LiquidityPolicy, orderValue, entryImpact float64, forceCostRefresh bool) (int, bool) {
 	open := parseFloat(row["next_open"])
 	if open <= 0 {

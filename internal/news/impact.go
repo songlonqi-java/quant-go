@@ -33,13 +33,13 @@ type ImpactEvent struct {
 
 // ImpactReport aggregates mention events into a readable summary.
 type ImpactReport struct {
-	DateRange        string
-	TotalArticles    int
-	EventDays        int
-	UnbuyableEvents  int
-	ByMentions       []ImpactBucket
-	TopStocks        []ImpactStockLine
-	ActiveHorizons   []int
+	DateRange       string
+	TotalArticles   int
+	EventDays       int
+	UnbuyableEvents int
+	ByMentions      []ImpactBucket
+	TopStocks       []ImpactStockLine
+	ActiveHorizons  []int
 }
 
 // ImpactBucket aggregates one mentions-bucket across horizons.
@@ -51,10 +51,10 @@ type ImpactBucket struct {
 
 // HorizonStats summarizes net and excess returns for one horizon.
 type HorizonStats struct {
-	Events         int
-	NetMeanPct     float64
-	ExcessMeanPct  float64
-	WinRatePct     float64
+	Events          int
+	NetMeanPct      float64
+	ExcessMeanPct   float64
+	WinRatePct      float64
 	MedianExcessPct float64
 }
 

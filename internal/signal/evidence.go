@@ -14,19 +14,19 @@ import (
 // SuggestedWeightPct is a share of the deployable portfolio budget, not a
 // guarantee that the portfolio should be fully invested.
 type HistoricalEvidence struct {
-	Available          bool
-	Eligible           bool
-	Enforced           bool
-	Basis              string
-	StrategySpecific   bool
-	PriorBasis         string
-	PriorSamples       int
-	PriorWeight        float64
-	Trades             int
-	Samples            int
-	Wins               int
-	WinRatePct         float64
-	ExpectedReturnPct  float64
+	Available         bool
+	Eligible          bool
+	Enforced          bool
+	Basis             string
+	StrategySpecific  bool
+	PriorBasis        string
+	PriorSamples      int
+	PriorWeight       float64
+	Trades            int
+	Samples           int
+	Wins              int
+	WinRatePct        float64
+	ExpectedReturnPct float64
 	// ProxyExpectedReturnPct is the equal-weight market proxy return over the
 	// same holding windows; AlphaExpectedReturnPct is the excess over it and is
 	// what formal qualification is measured against.
