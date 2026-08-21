@@ -813,7 +813,7 @@ func signalCmd() *cobra.Command {
 				fmt.Printf("警告: 最近交易日%s；将跳过依赖真实成交价的策略，持仓/前向验证需重拉数据后才准确\n", result.PriceQuality.Summary())
 			}
 			fmt.Printf("策略: %s\n", strings.Join(result.StrategyNames, ", "))
-			fmt.Printf("股票数: %d, 数据量: %d\n", len(ds.CodeMap), len(ds.Bars))
+			fmt.Printf("股票数: %d, 数据量: %d\n", len(ds.CodeMap), ds.BarCount())
 			if result.MarketStatus != nil {
 				result.MarketStatus.Print()
 			}
@@ -1022,11 +1022,11 @@ func validationCmd() *cobra.Command {
 					break
 				}
 			}
-			ds, err := dataset.Load(dataset.LoadOptions{RawDir: cfg.Data.RawDir, LoadFundamentals: loadFundamentals})
+			ds, err := dataset.Load(dataset.LoadOptions{RawDir: cfg.Data.RawDir, LoadFundamentals: loadFundamentals, SkipMoneyflows: true})
 			if err != nil {
 				return err
 			}
-			if q := data.CheckPriceDataQuality(ds.Bars); !q.HasCompleteRawPrices() && !allowAdjusted {
+			if q := ds.CheckPriceQualityAll(); !q.HasCompleteRawPrices() && !allowAdjusted {
 				return fmt.Errorf("%s；历史验证需要真实成交价，请重新拉取行情数据，或临时使用 --allow-adjusted-trades", q.Summary())
 			}
 			path := outputPath

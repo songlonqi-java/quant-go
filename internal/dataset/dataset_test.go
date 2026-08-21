@@ -65,8 +65,8 @@ func TestFilterByMarketCapAndActiveBarsUseSameUniverse(t *testing.T) {
 		testBar("000002.SZ", "20260102", 9),
 	}
 	ds := &Dataset{
-		Bars:         append(append([]data.DailyBar{}, large...), small...),
 		CodeMap:      map[string][]data.DailyBar{"000001.SZ": large, "000002.SZ": small},
+		AllCodeMap:   map[string][]data.DailyBar{"000001.SZ": large, "000002.SZ": small},
 		Fundamentals: store,
 		LatestDate:   "20260102",
 	}

@@ -9,7 +9,6 @@ import (
 
 	"quant/internal/ai"
 	"quant/internal/config"
-	"quant/internal/data"
 	"quant/internal/dataset"
 	"quant/internal/realtime"
 	"quant/internal/signal"
@@ -114,11 +113,11 @@ func buildEvidenceFile(ctx context.Context, cfg *config.Config) error {
 			break
 		}
 	}
-	ds, err := dataset.Load(dataset.LoadOptions{RawDir: cfg.Data.RawDir, LoadFundamentals: loadFundamentals})
+	ds, err := dataset.Load(dataset.LoadOptions{RawDir: cfg.Data.RawDir, LoadFundamentals: loadFundamentals, SkipMoneyflows: true})
 	if err != nil {
 		return err
 	}
-	if q := data.CheckPriceDataQuality(ds.Bars); !q.HasCompleteRawPrices() {
+	if q := ds.CheckPriceQualityAll(); !q.HasCompleteRawPrices() {
 		return fmt.Errorf("%s；历史验证需要真实成交价", q.Summary())
 	}
 	store, err := validation.Build(validation.BuildOptions{

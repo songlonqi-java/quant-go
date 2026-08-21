@@ -15,10 +15,17 @@ type LoadOptions struct {
 	FilterST         bool
 	MinMarketCap     float64
 	LoadFundamentals bool
+	// SkipMoneyflows avoids loading the full historical moneyflow store.
+	// Evidence rebuilds do not need it; the daily signal flow keeps it.
+	SkipMoneyflows bool
 }
 
 type Dataset struct {
-	Bars              []data.DailyBar
+	// AllCodeMap holds every bar grouped by code (the full, unfiltered set);
+	// CodeMap is the filtered working set. A flat Bars slice is deliberately
+	// NOT retained: keeping a third full copy was the main memory driver of
+	// the daily task (peaks of 6+ GB). Use BarCount / CheckPriceQualityAll /
+	// RecentBars which iterate the maps without copying.
 	AllCodeMap        map[string][]data.DailyBar
 	CodeMap           map[string][]data.DailyBar
 	StockNames        map[string]string
@@ -52,7 +59,6 @@ func Load(opts LoadOptions) (*Dataset, error) {
 	allCodeMap := sortedCodeMap(bars)
 	stockPath := filepath.Join(opts.RawDir, "stocks.parquet")
 	ds := &Dataset{
-		Bars:         bars,
 		AllCodeMap:   allCodeMap,
 		CodeMap:      cloneCodeMap(allCodeMap),
 		StockNames:   data.LoadStockNames(stockPath),
@@ -75,7 +81,9 @@ func Load(opts LoadOptions) (*Dataset, error) {
 		ds.filterByMarketCap(opts.MinMarketCap)
 	}
 
-	ds.Moneyflows, _ = fetcher.LoadMoneyflowStore()
+	if !opts.SkipMoneyflows {
+		ds.Moneyflows, _ = fetcher.LoadMoneyflowStore()
+	}
 	return ds, nil
 }
 
@@ -103,6 +111,30 @@ func LoadFundamentals(rawDir string) *data.FundamentalStore {
 	return store
 }
 
+// BarCount returns the total number of bars in the full dataset without
+// materializing a flat copy.
+func (d *Dataset) BarCount() int {
+	total := 0
+	for _, bars := range d.AllCodeMap {
+		total += len(bars)
+	}
+	return total
+}
+
+// CheckPriceQualityAll verifies raw price coverage across every bar of the
+// full dataset without copying it into one flat slice.
+func (d *Dataset) CheckPriceQualityAll() data.PriceDataQuality {
+	q := data.PriceDataQuality{Total: d.BarCount()}
+	for _, bars := range d.AllCodeMap {
+		for _, b := range bars {
+			if !b.HasRawPrices() {
+				q.MissingRaw++
+			}
+		}
+	}
+	return q
+}
+
 func (d *Dataset) RecentBars(lookback int) []data.DailyBar {
 	if lookback <= 0 {
 		lookback = 1
@@ -124,21 +156,13 @@ func (d *Dataset) RecentBars(lookback int) []data.DailyBar {
 // ActiveBars returns the complete history for the current, investable universe.
 // It applies the same latest-date, ST, and market-cap filters as CodeMap, so
 // market analysis cannot accidentally include securities that signal generation
-// has excluded.
+// has excluded. Prefer market.AnalyzeCodeMap(CodeMap) over this method: the
+// flat copy it returns is only cheap enough for small callers.
 func (d *Dataset) ActiveBars() []data.DailyBar {
-	if len(d.CodeMap) == 0 {
-		return nil
-	}
-	active := make([]data.DailyBar, 0, len(d.Bars))
+	active := make([]data.DailyBar, 0, d.BarCount()/len(d.CodeMap)*len(d.CodeMap))
 	for _, bars := range d.CodeMap {
 		active = append(active, bars...)
 	}
-	sort.Slice(active, func(i, j int) bool {
-		if active[i].TradeDate == active[j].TradeDate {
-			return active[i].TsCode < active[j].TsCode
-		}
-		return active[i].TradeDate < active[j].TradeDate
-	})
 	return active
 }
 

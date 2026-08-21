@@ -112,7 +112,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		Dataset:       ds,
 		PriceQuality:  priceQuality,
 	}
-	result.MarketStatus = market.Analyze(ds.ActiveBars())
+	result.MarketStatus = market.AnalyzeCodeMap(ds.CodeMap)
 	result.NewsSummary, result.NewsErr = analyzeNews(ctx, cfg.Data.RawDir, opts.NewsAnalyzer)
 	result.SectorReport, result.SectorErr = sector.LoadReport(cfg.Data.RawDir, ds.LatestDate)
 

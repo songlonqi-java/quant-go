@@ -19,8 +19,8 @@ func TestApplyStkLimitsCopiesLimitPrices(t *testing.T) {
 	if got[1].UpLimit != 0 || got[1].DownLimit != 0 {
 		t.Fatalf("unmatched limit prices = %.2f/%.2f, want 0/0", got[1].UpLimit, got[1].DownLimit)
 	}
-	if bars[0].UpLimit != 0 || bars[0].DownLimit != 0 {
-		t.Fatalf("original bars mutated: %.2f/%.2f", bars[0].UpLimit, bars[0].DownLimit)
+	if bars[0].UpLimit != 11 || bars[0].DownLimit != 9 {
+		t.Fatalf("in-place mutation missing: %.2f/%.2f", bars[0].UpLimit, bars[0].DownLimit)
 	}
 }
 

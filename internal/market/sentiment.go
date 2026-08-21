@@ -64,11 +64,13 @@ func loadIndustries() map[string]string {
 	return stockIndustryMap
 }
 
-func Analyze(bars []data.DailyBar) *MarketStatus {
-	if len(bars) == 0 {
+// AnalyzeCodeMap derives the market status from an already-grouped code map,
+// avoiding the full re-group copy that Analyze performs. Callers that already
+// hold a grouped dataset (dataset.Load) should use this.
+func AnalyzeCodeMap(codeMap map[string][]data.DailyBar) *MarketStatus {
+	if len(codeMap) == 0 {
 		return nil
 	}
-	codeMap := data.GroupByCode(bars)
 	ms := &MarketStatus{}
 
 	ms.analyzeIndex(codeMap)
@@ -78,6 +80,16 @@ func Analyze(bars []data.DailyBar) *MarketStatus {
 	ms.determineSentiment()
 
 	return ms
+}
+
+// Analyze derives the market status from a flat bar slice. It groups the bars
+// internally, which copies the input; prefer AnalyzeCodeMap when a grouped
+// dataset is already available.
+func Analyze(bars []data.DailyBar) *MarketStatus {
+	if len(bars) == 0 {
+		return nil
+	}
+	return AnalyzeCodeMap(data.GroupByCode(bars))
 }
 
 func (ms *MarketStatus) analyzeTradingStats(codeMap map[string][]data.DailyBar) {

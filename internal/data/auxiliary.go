@@ -26,19 +26,20 @@ func (s *StkLimitStore) Get(tsCode, tradeDate string) (StkLimit, bool) {
 	return limit, ok
 }
 
+// ApplyStkLimits overwrites the limit prices on each bar in place. All callers
+// pass a freshly decoded slice, so mutating avoids a second full copy of the
+// daily dataset (tens of GB of peak heap across a load + replay).
 func ApplyStkLimits(bars []DailyBar, store *StkLimitStore) []DailyBar {
 	if store == nil {
 		return bars
 	}
-	out := make([]DailyBar, len(bars))
-	for i, b := range bars {
-		out[i] = b
-		if limit, ok := store.Get(b.TsCode, b.TradeDate); ok {
-			out[i].UpLimit = limit.UpLimit
-			out[i].DownLimit = limit.DownLimit
+	for i := range bars {
+		if limit, ok := store.Get(bars[i].TsCode, bars[i].TradeDate); ok {
+			bars[i].UpLimit = limit.UpLimit
+			bars[i].DownLimit = limit.DownLimit
 		}
 	}
-	return out
+	return bars
 }
 
 type MoneyflowStore struct {
